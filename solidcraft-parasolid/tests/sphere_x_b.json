@@ -1,0 +1,16 @@
+{
+  "entry": "import",
+  "file": "sphere.x_b",
+  "expect": {
+    "reply": {
+      "bodies": 1
+    },
+    "model": {
+      "body_count": 1,
+      "total": {
+        "volume_mm3": 4188.790204786391
+      }
+    },
+    "tolerance": 0.001
+  }
+}

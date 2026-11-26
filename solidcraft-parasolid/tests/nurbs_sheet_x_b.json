@@ -1,0 +1,9 @@
+{
+  "entry": "import",
+  "file": "nurbs_sheet.x_b",
+  "expect": {
+    "reply": {
+      "bodies": 1
+    }
+  }
+}

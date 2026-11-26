@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-tools & SolidCraft CLI 0.50.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/tools /tmp/dist
+          gh release download -R bytecodealliance/wasm-tools -p "*x86_64-linux.tar.gz" -D /tmp/tools
+          tar -xzf /tmp/tools/*wasm-tools*linux*.tar.gz -C /tmp/tools
+          WASM_TOOLS=$(find /tmp/tools -name wasm-tools -type f | head -n 1)
+          echo "WASM_TOOLS=$WASM_TOOLS" >> "$GITHUB_ENV"
+
+          gh release download v0.50.0 -R tangency-labs/solidcraft -p "solidcraft-0.50.0-linux-x86_64.tar.gz" -D /tmp/tools
+          mkdir -p /tmp/tools/sc
+          tar -xzf /tmp/tools/solidcraft-0.50.0-linux-x86_64.tar.gz -C /tmp/tools/sc
+          SC_CLI=$(find /tmp/tools/sc -name solidcraft-cli -type f | head -n 1)
+          chmod +x "$SC_CLI"
+          echo "SC_CLI=$SC_CLI" >> "$GITHUB_ENV"
+
+      - name: Test, build component, verify and package zip
+        run: |
+          cargo test --workspace
+          cargo build --release --target wasm32-unknown-unknown -p solidcraft-parasolid-wasm
+          "$WASM_TOOLS" component new target/wasm32-unknown-unknown/release/solidcraft_parasolid_wasm.wasm -o solidcraft-parasolid/solidcraft-parasolid.wasm
+          "$SC_CLI" plugin check solidcraft-parasolid
+          "$SC_CLI" plugin test solidcraft-parasolid --require-cases
+
+          VER="${GITHUB_REF_NAME#v}"
+          ZIP_NAME="solidcraft-parasolid-${VER}.zip"
+          (cd solidcraft-parasolid && zip -r "/tmp/dist/${ZIP_NAME}" plugin.json solidcraft-parasolid.wasm)
+          "$SC_CLI" plugin check "/tmp/dist/${ZIP_NAME}"
+          (cd /tmp/dist && sha256sum "${ZIP_NAME}" > SHA256SUMS.txt)
+          echo "ZIP_PATH=/tmp/dist/${ZIP_NAME}" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP_PATH }}
+            /tmp/dist/SHA256SUMS.txt
+          generate_release_notes: true

@@ -1,0 +1,16 @@
+{
+  "entry": "import",
+  "file": "cone_frustum.x_b",
+  "expect": {
+    "reply": {
+      "bodies": 1
+    },
+    "model": {
+      "body_count": 1,
+      "total": {
+        "volume_mm3": 3267.256359733385
+      }
+    },
+    "tolerance": 0.001
+  }
+}

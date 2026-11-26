@@ -1,0 +1,191 @@
+use std::fs;
+use std::path::Path;
+use std::process;
+use std::time::Instant;
+
+use xtopen_core::{
+    convert_bytes_to_step, extract_brep, parse_bytes, dumps_step, StepOptions, StepSchema,
+    StepUnits,
+};
+
+fn usage() -> ! {
+    eprintln!("Usage:");
+    eprintln!("  xtopen-cli convert <input.x_b|x_t> <output.step> [--units mm|m] [--schema AP214|AP242]");
+    eprintln!("  xtopen-cli inspect <input.x_b|x_t>");
+    eprintln!("  xtopen-cli bench <input.x_b|x_t> [--iters N]");
+    process::exit(2);
+}
+
+fn median(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    if n == 0 {
+        0.0
+    } else if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        0.5 * (sorted[n / 2 - 1] + sorted[n / 2])
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 3 {
+        usage();
+    }
+    match args[1].as_str() {
+        "convert" => {
+            if args.len() < 4 {
+                usage();
+            }
+            let input = Path::new(&args[2]);
+            let output = Path::new(&args[3]);
+            let mut opts = StepOptions::default();
+            if let Some(stem) = input.file_stem().and_then(|s| s.to_str()) {
+                opts.name = stem.to_string();
+            }
+            let mut i = 4;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--units" => {
+                        i += 1;
+                        let u = args.get(i).map(String::as_str).unwrap_or_else(|| usage());
+                        opts.units = match u {
+                            "mm" => StepUnits::Mm,
+                            "m" => StepUnits::M,
+                            _ => usage(),
+                        };
+                    }
+                    "--schema" => {
+                        i += 1;
+                        let s = args.get(i).map(String::as_str).unwrap_or_else(|| usage());
+                        opts.schema = match s.to_ascii_uppercase().as_str() {
+                            "AP214" => StepSchema::Ap214,
+                            "AP242" => StepSchema::Ap242,
+                            _ => usage(),
+                        };
+                    }
+                    _ => usage(),
+                }
+                i += 1;
+            }
+            let data = fs::read(input).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {e}", input.display());
+                process::exit(1);
+            });
+            let res = convert_bytes_to_step(&data, &opts).unwrap_or_else(|e| {
+                eprintln!("Conversion error: {e}");
+                process::exit(1);
+            });
+            fs::write(output, &res.step).unwrap_or_else(|e| {
+                eprintln!("Failed to write {}: {e}", output.display());
+                process::exit(1);
+            });
+            println!(
+                "Converted {} -> {} ({} bodies, {} faces, {} bytes STEP)",
+                input.display(),
+                output.display(),
+                res.bodies,
+                res.faces,
+                res.step.len()
+            );
+        }
+        "inspect" => {
+            let input = Path::new(&args[2]);
+            let data = fs::read(input).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {e}", input.display());
+                process::exit(1);
+            });
+            let parsed = parse_bytes(&data).unwrap_or_else(|e| {
+                eprintln!("Parse error: {e}");
+                process::exit(1);
+            });
+            let model = extract_brep(&parsed);
+            println!(
+                "{{\"format\":\"{}\",\"schema\":\"{}\",\"nodes\":{},\"bodies\":{},\"faces\":{},\"edges\":{},\"vertices\":{},\"warnings\":{}}}",
+                model.header.format_kind,
+                model.header.schema_name,
+                parsed.nodes.len(),
+                model.bodies.len(),
+                model.faces.len(),
+                model.edges.len(),
+                model.vertices.len(),
+                model.warnings.len(),
+            );
+        }
+        "bench" => {
+            let input = Path::new(&args[2]);
+            let mut iters = 50usize;
+            let mut i = 3;
+            while i < args.len() {
+                if args[i] == "--iters" {
+                    i += 1;
+                    iters = args
+                        .get(i)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or_else(|| usage())
+                        .max(1);
+                } else {
+                    usage();
+                }
+                i += 1;
+            }
+            let data = fs::read(input).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {e}", input.display());
+                process::exit(1);
+            });
+            let mut opts = StepOptions::default();
+            if let Some(stem) = input.file_stem().and_then(|s| s.to_str()) {
+                opts.name = stem.to_string();
+            }
+
+            // Warmup once
+            let p_warm = parse_bytes(&data).expect("bench parse failed");
+            let m_warm = extract_brep(&p_warm);
+            let step_warm = dumps_step(&m_warm, &opts);
+            std::hint::black_box(&step_warm);
+
+            let mut parse_ms = Vec::with_capacity(iters);
+            let mut brep_ms = Vec::with_capacity(iters);
+            let mut step_ms = Vec::with_capacity(iters);
+            let mut total_ms = Vec::with_capacity(iters);
+
+            for _ in 0..iters {
+                let t0 = Instant::now();
+                let parsed = parse_bytes(&data).unwrap();
+                let t1 = Instant::now();
+                let model = extract_brep(&parsed);
+                let t2 = Instant::now();
+                let step = dumps_step(&model, &opts);
+                let t3 = Instant::now();
+                std::hint::black_box(step.len());
+
+                parse_ms.push((t1 - t0).as_secs_f64() * 1000.0);
+                brep_ms.push((t2 - t1).as_secs_f64() * 1000.0);
+                step_ms.push((t3 - t2).as_secs_f64() * 1000.0);
+                total_ms.push((t3 - t0).as_secs_f64() * 1000.0);
+            }
+
+            parse_ms.sort_by(|a, b| a.total_cmp(b));
+            brep_ms.sort_by(|a, b| a.total_cmp(b));
+            step_ms.sort_by(|a, b| a.total_cmp(b));
+            total_ms.sort_by(|a, b| a.total_cmp(b));
+
+            let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+            println!(
+                "{{\"bytes\":{},\"iters\":{},\"step_bytes\":{},\"median_ms\":{{\"parse\":{:.6},\"brep\":{:.6},\"step\":{:.6},\"total\":{:.6}}},\"mean_ms\":{{\"parse\":{:.6},\"brep\":{:.6},\"step\":{:.6},\"total\":{:.6}}}}}",
+                data.len(),
+                iters,
+                step_warm.len(),
+                median(&parse_ms),
+                median(&brep_ms),
+                median(&step_ms),
+                median(&total_ms),
+                mean(&parse_ms),
+                mean(&brep_ms),
+                mean(&step_ms),
+                mean(&total_ms),
+            );
+        }
+        _ => usage(),
+    }
+}

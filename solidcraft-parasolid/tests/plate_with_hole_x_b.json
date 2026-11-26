@@ -1,0 +1,16 @@
+{
+  "entry": "import",
+  "file": "plate_with_hole.x_b",
+  "expect": {
+    "reply": {
+      "bodies": 1
+    },
+    "model": {
+      "body_count": 1,
+      "total": {
+        "volume_mm3": 15214.601836602551
+      }
+    },
+    "tolerance": 0.001
+  }
+}

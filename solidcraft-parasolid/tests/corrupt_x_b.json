@@ -1,0 +1,7 @@
+{
+  "entry": "import",
+  "file": "corrupt.x_b",
+  "expect": {
+    "error": "invalid_input"
+  }
+}

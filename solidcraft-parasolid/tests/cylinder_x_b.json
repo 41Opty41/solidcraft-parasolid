@@ -1,0 +1,16 @@
+{
+  "entry": "import",
+  "file": "cylinder.x_b",
+  "expect": {
+    "reply": {
+      "bodies": 1
+    },
+    "model": {
+      "body_count": 1,
+      "total": {
+        "volume_mm3": 6283.185307179587
+      }
+    },
+    "tolerance": 0.001
+  }
+}

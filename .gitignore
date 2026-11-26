@@ -1,0 +1,7 @@
+/target
+/.tools
+/*.zip
+*.tmp
+__pycache__/
+.pytest_cache/
+solidcraft-parasolid/solidcraft-parasolid.wasm
