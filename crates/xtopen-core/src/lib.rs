@@ -1,23 +1,38 @@
 //! Clean-room pure-Rust Parasolid XT parser, B-rep model extractor, and STEP AP214/AP242 writer.
 
+pub mod mass;
+pub mod mesh_brep;
 pub mod model;
 pub mod schema;
 pub mod step_writer;
+pub mod tessellate;
 pub mod xb;
 pub mod xt;
+pub mod xt_writer;
 
+pub use mass::{check_mesh_closed, compute_mesh_mass_props, MeshMassProps};
+pub use mesh_brep::{meshes_to_brep, MeshBodyInput};
 pub use model::{
-    extract_brep, BodyInfo, BrepModel, Coedge, ConversionWarning, CurveData, CurveKind, Edge, Face,
-    Loop, NurbsCurve, NurbsSurface, Sense, SurfaceData, SurfaceKind, Vertex,
+    extract_brep, transform_curve_data, transform_surface_data, Appearance, AssemblyInfo,
+    Attribute, AttributeValue, BodyInfo, BrepModel, Coedge, ConversionWarning, CurveData,
+    CurveKind, Edge, Face, InstanceInfo, Loop, NurbsCurve, NurbsSurface, Sense, SurfaceData,
+    SurfaceKind, Transform3D, Vertex,
 };
 pub use step_writer::{convert_parsed_to_step, dumps_step, StepOptions, StepSchema, StepUnits};
+pub use tessellate::{tessellate_brep, write_obj_string, write_stl_binary_bytes, TessMesh};
 pub use xb::{parse_xb, ParseResult, XtError, XtHeader, XtNode, XtValue};
 pub use xt::parse_xt;
+pub use xt_writer::{
+    brep_to_xt_nodes, write_xb_from_brep, write_xb_nodes, write_xt_from_brep, write_xt_nodes,
+    xb_to_xt, xt_to_xb,
+};
 
 #[derive(Clone, Debug)]
 pub struct ConvertOutput {
     pub step: String,
     pub bodies: usize,
+    pub assemblies: usize,
+    pub instances: usize,
     pub faces: usize,
     pub edges: usize,
     pub vertices: usize,
@@ -78,6 +93,8 @@ pub fn convert_bytes_to_step(data: &[u8], opts: &StepOptions) -> Result<ConvertO
     Ok(ConvertOutput {
         step,
         bodies: model.bodies.len(),
+        assemblies: model.assemblies.len(),
+        instances: model.instances.len(),
         faces: model.faces.len(),
         edges: model.edges.len(),
         vertices: model.vertices.len(),

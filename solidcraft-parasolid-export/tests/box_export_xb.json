@@ -1,0 +1,13 @@
+{
+  "entry": "export-xb",
+  "design": "box.step",
+  "params": {
+    "quality": "standard",
+    "merge_coplanar": true
+  },
+  "expect": {
+    "reply": {
+      "format": "solidcraft-parasolid-export.export-xb"
+    }
+  }
+}

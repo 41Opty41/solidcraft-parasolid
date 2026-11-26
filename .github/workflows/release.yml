@@ -36,25 +36,35 @@ jobs:
           chmod +x "$SC_CLI"
           echo "SC_CLI=$SC_CLI" >> "$GITHUB_ENV"
 
-      - name: Test, build component, verify and package zip
+      - name: Test, build components, verify and package zips
         run: |
           cargo test --workspace
           cargo build --release --target wasm32-unknown-unknown -p solidcraft-parasolid-wasm
+          cargo build --release --target wasm32-unknown-unknown -p solidcraft-parasolid-export-wasm
           "$WASM_TOOLS" component new target/wasm32-unknown-unknown/release/solidcraft_parasolid_wasm.wasm -o solidcraft-parasolid/solidcraft-parasolid.wasm
+          "$WASM_TOOLS" component new target/wasm32-unknown-unknown/release/solidcraft_parasolid_export_wasm.wasm -o solidcraft-parasolid-export/solidcraft-parasolid-export.wasm
+
           "$SC_CLI" plugin check solidcraft-parasolid
           "$SC_CLI" plugin test solidcraft-parasolid --require-cases
+          "$SC_CLI" plugin check solidcraft-parasolid-export
+          "$SC_CLI" plugin test solidcraft-parasolid-export --require-cases
 
           VER="${GITHUB_REF_NAME#v}"
-          ZIP_NAME="solidcraft-parasolid-${VER}.zip"
-          (cd solidcraft-parasolid && zip -r "/tmp/dist/${ZIP_NAME}" plugin.json solidcraft-parasolid.wasm)
-          "$SC_CLI" plugin check "/tmp/dist/${ZIP_NAME}"
-          (cd /tmp/dist && sha256sum "${ZIP_NAME}" > SHA256SUMS.txt)
-          echo "ZIP_PATH=/tmp/dist/${ZIP_NAME}" >> "$GITHUB_ENV"
+          IMP_ZIP="solidcraft-parasolid-${VER}.zip"
+          EXP_ZIP="solidcraft-parasolid-export-0.1.0.zip"
+          (cd solidcraft-parasolid && zip -r "/tmp/dist/${IMP_ZIP}" plugin.json solidcraft-parasolid.wasm)
+          (cd solidcraft-parasolid-export && zip -r "/tmp/dist/${EXP_ZIP}" plugin.json solidcraft-parasolid-export.wasm)
+          "$SC_CLI" plugin check "/tmp/dist/${IMP_ZIP}"
+          "$SC_CLI" plugin check "/tmp/dist/${EXP_ZIP}"
+          (cd /tmp/dist && sha256sum "${IMP_ZIP}" "${EXP_ZIP}" > SHA256SUMS.txt)
+          echo "IMP_ZIP_PATH=/tmp/dist/${IMP_ZIP}" >> "$GITHUB_ENV"
+          echo "EXP_ZIP_PATH=/tmp/dist/${EXP_ZIP}" >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ env.ZIP_PATH }}
+            ${{ env.IMP_ZIP_PATH }}
+            ${{ env.EXP_ZIP_PATH }}
             /tmp/dist/SHA256SUMS.txt
           generate_release_notes: true

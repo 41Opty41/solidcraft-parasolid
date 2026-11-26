@@ -171,6 +171,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "solidcraft-parasolid-export-wasm"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "wit-bindgen",
+ "xtopen-core",
+]
+
+[[package]]
 name = "solidcraft-parasolid-wasm"
 version = "0.1.0"
 dependencies = [
@@ -331,6 +340,14 @@ dependencies = [
 [[package]]
 name = "xtopen-core"
 version = "0.1.0"
+
+[[package]]
+name = "xtopen-web-wasm"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+ "xtopen-core",
+]
 
 [[package]]
 name = "zmij"

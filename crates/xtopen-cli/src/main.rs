@@ -4,13 +4,14 @@ use std::process;
 use std::time::Instant;
 
 use xtopen_core::{
-    convert_bytes_to_step, extract_brep, parse_bytes, dumps_step, StepOptions, StepSchema,
-    StepUnits,
+    convert_bytes_to_step, dumps_step, extract_brep, parse_bytes, xb_to_xt, xt_to_xb, StepOptions,
+    StepSchema, StepUnits,
 };
 
 fn usage() -> ! {
     eprintln!("Usage:");
     eprintln!("  xtopen-cli convert <input.x_b|x_t> <output.step> [--units mm|m] [--schema AP214|AP242]");
+    eprintln!("  xtopen-cli transcode <input.x_b|x_t> <output.x_t|x_b>");
     eprintln!("  xtopen-cli inspect <input.x_b|x_t>");
     eprintln!("  xtopen-cli bench <input.x_b|x_t> [--iters N]");
     process::exit(2);
@@ -87,6 +88,40 @@ fn main() {
                 res.bodies,
                 res.faces,
                 res.step.len()
+            );
+        }
+        "transcode" => {
+            if args.len() < 4 {
+                usage();
+            }
+            let input = Path::new(&args[2]);
+            let output = Path::new(&args[3]);
+            let data = fs::read(input).unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {e}", input.display());
+                process::exit(1);
+            });
+            let to_xt = matches!(
+                output.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+                Some("x_t" | "xt" | "xmt_txt")
+            );
+            let res = if to_xt {
+                xb_to_xt(&data)
+            } else {
+                xt_to_xb(&data)
+            }
+            .unwrap_or_else(|e| {
+                eprintln!("Transcode error: {e}");
+                process::exit(1);
+            });
+            fs::write(output, &res).unwrap_or_else(|e| {
+                eprintln!("Failed to write {}: {e}", output.display());
+                process::exit(1);
+            });
+            println!(
+                "Transcoded {} -> {} ({} bytes)",
+                input.display(),
+                output.display(),
+                res.len()
             );
         }
         "inspect" => {

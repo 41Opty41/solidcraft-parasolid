@@ -1,0 +1,13 @@
+{
+  "entry": "export-xb",
+  "design": "cylinder.step",
+  "params": {
+    "quality": "standard",
+    "merge_coplanar": false
+  },
+  "expect": {
+    "reply": {
+      "format": "solidcraft-parasolid-export.export-xb"
+    }
+  }
+}

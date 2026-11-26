@@ -82,10 +82,22 @@ impl Guest for Importer {
             })
             .collect();
 
-        let summary = format!(
-            "Imported {} body/bodies, {} faces, {} edges from Parasolid ({})",
-            converted.bodies, converted.faces, converted.edges, converted.format_kind
-        );
+        let summary = if converted.assemblies > 0 && converted.instances > 0 {
+            format!(
+                "Imported {} assembly/assemblies ({} instances), {} body/bodies, {} faces, {} edges from Parasolid ({})",
+                converted.assemblies,
+                converted.instances,
+                converted.bodies,
+                converted.faces,
+                converted.edges,
+                converted.format_kind
+            )
+        } else {
+            format!(
+                "Imported {} body/bodies, {} faces, {} edges from Parasolid ({})",
+                converted.bodies, converted.faces, converted.edges, converted.format_kind
+            )
+        };
         Ok(json!({ "summary": summary, "items": loss_items }).to_string())
     }
 }

@@ -4,6 +4,8 @@ members = [
     "crates/xtopen-core",
     "crates/xtopen-cli",
     "crates/solidcraft-parasolid-wasm",
+    "crates/solidcraft-parasolid-export-wasm",
+    "crates/xtopen-web-wasm",
 ]
 
 [profile.release]

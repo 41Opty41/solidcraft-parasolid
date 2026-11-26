@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>xtopen — Browser Parasolid XT (.x_b / .x_t) 3D Viewer &amp; Mass Calculator</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="badge-dot"></span>
+      <span class="title">xtopen</span>
+      <span class="subtitle">Clean-Room Parasolid XT Viewer &amp; Mass Calculator (WASM)</span>
+    </div>
+    <div class="top-actions">
+      <label class="btn btn-primary" for="file-input">Open .x_b / .x_t / .x_p</label>
+      <input id="file-input" type="file" accept=".x_b,.x_t,.x_p,.xmt_txt,.xmt_bin,.xb,.xt" hidden />
+      <a class="btn btn-ghost" href="https://github.com/41Opty41/solidcraft-parasolid" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="viewport-wrap" id="drop-zone">
+      <canvas id="gl-canvas"></canvas>
+
+      <div class="sample-bar">
+        <span class="bar-label">Samples:</span>
+        <button class="chip" data-sample="samples/plate_with_hole.x_b">Plate with Hole</button>
+        <button class="chip" data-sample="samples/colored_box.x_b">Colored Block</button>
+        <button class="chip" data-sample="samples/assembly_two_parts.x_b">2-Part Assembly</button>
+        <button class="chip" data-sample="samples/cylinder.x_b">Cylinder</button>
+        <button class="chip" data-sample="samples/sphere.x_b">Sphere</button>
+        <button class="chip" data-sample="samples/cone_frustum.x_b">Cone Frustum</button>
+      </div>
+
+      <div class="view-toolbar">
+        <button class="tool-btn" data-view="iso" title="Isometric view">Iso</button>
+        <button class="tool-btn" data-view="front" title="Front (+Y)">Front</button>
+        <button class="tool-btn" data-view="top" title="Top (+Z)">Top</button>
+        <button class="tool-btn" data-view="right" title="Right (+X)">Right</button>
+        <span class="sep"></span>
+        <button class="tool-btn" id="btn-fit" title="Fit to view (F)">Fit</button>
+        <select id="render-mode" class="tool-select" title="Display Mode">
+          <option value="shaded_edges">Shaded + Edges</option>
+          <option value="shaded">Shaded Only</option>
+          <option value="wireframe">Wireframe</option>
+          <option value="xray">X-Ray</option>
+        </select>
+      </div>
+
+      <div id="drop-overlay" class="drop-overlay hidden">
+        <div class="drop-box">Drop Parasolid file (<code>.x_b</code>, <code>.x_t</code>, <code>.x_p</code>) to inspect locally in WASM</div>
+      </div>
+
+      <div class="hud-hint">Drag: Orbit &middot; Right-drag / Shift+Drag: Pan &middot; Wheel: Zoom &middot; 100% client-side</div>
+    </section>
+
+    <aside class="sidebar">
+      <section class="card">
+        <h2>Model Summary <span id="watertight-badge" class="pill pill-neutral">—</span></h2>
+        <div id="model-name" class="file-label">Loading WASM engine...</div>
+        <div class="kv-grid">
+          <div><span>Format</span><strong id="m-format">—</strong></div>
+          <div><span>Schema</span><strong id="m-schema">—</strong></div>
+          <div><span>Bodies</span><strong id="m-bodies">—</strong></div>
+          <div><span>Assemblies</span><strong id="m-assemblies">—</strong></div>
+          <div><span>Faces</span><strong id="m-faces">—</strong></div>
+          <div><span>Edges</span><strong id="m-edges">—</strong></div>
+          <div><span>Triangles</span><strong id="m-tris">—</strong></div>
+          <div><span>Euler &chi;</span><strong id="m-euler">—</strong></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Mass &amp; Inertia <span class="pill pill-info">brepmass</span></h2>
+        <div class="material-row">
+          <select id="material-preset">
+            <option value="7850">Steel (7850 kg/m&sup3;)</option>
+            <option value="2700" selected>Aluminum 6061 (2700 kg/m&sup3;)</option>
+            <option value="4430">Titanium Ti-6Al-4V (4430 kg/m&sup3;)</option>
+            <option value="8500">Brass (8500 kg/m&sup3;)</option>
+            <option value="8960">Copper (8960 kg/m&sup3;)</option>
+            <option value="1050">ABS Plastic (1050 kg/m&sup3;)</option>
+            <option value="1240">PLA (1240 kg/m&sup3;)</option>
+            <option value="custom">Custom kg/m&sup3;...</option>
+          </select>
+          <input id="density-input" type="number" min="1" step="10" value="2700" aria-label="Density kg/m3" />
+        </div>
+        <div class="kv-grid">
+          <div><span>Mass</span><strong id="m-mass">—</strong></div>
+          <div><span>Volume</span><strong id="m-volume">—</strong></div>
+          <div><span>Surface Area</span><strong id="m-area">—</strong></div>
+          <div><span>Size (mm)</span><strong id="m-size">—</strong></div>
+          <div class="full"><span>Center of Mass (mm)</span><strong id="m-com">—</strong></div>
+          <div class="full"><span>Principal Inertia (g&middot;mm&sup2;)</span><strong id="m-inertia">—</strong></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Convert &amp; Download</h2>
+        <div class="export-row">
+          <select id="step-schema">
+            <option value="0">STEP AP214</option>
+            <option value="1">STEP AP242</option>
+          </select>
+          <select id="step-units">
+            <option value="0">mm</option>
+            <option value="1">m</option>
+          </select>
+        </div>
+        <div class="btn-grid">
+          <button class="btn btn-export" id="dl-step" disabled>STEP (.step)</button>
+          <button class="btn btn-export" id="dl-stl" disabled>STL (.stl)</button>
+          <button class="btn btn-export" id="dl-obj" disabled>OBJ (.obj)</button>
+          <button class="btn btn-export" id="dl-xt" disabled>XT Text (.x_t)</button>
+          <button class="btn btn-export" id="dl-xb" disabled>XT Bin (.x_b)</button>
+        </div>
+        <p class="note">All geometry parsing, B-rep tessellation, mass calculation, and CAD conversions execute locally in your browser via WebAssembly.</p>
+      </section>
+
+      <div id="status-msg" class="status-msg"></div>
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

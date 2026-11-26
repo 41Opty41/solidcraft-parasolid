@@ -1,11 +1,12 @@
 //! Native zero-dependency ISO-10303-21 STEP AP214/AP242 writer for XT B-rep models.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use crate::model::{
-    extract_brep, BrepModel, Coedge, CurveData, CurveKind, Edge, Face, Loop, NurbsCurve,
-    NurbsSurface, SurfaceData, SurfaceKind,
+    extract_brep, transform_curve_data, transform_surface_data, Appearance, AssemblyInfo,
+    BodyInfo, BrepModel, Coedge, CurveData, CurveKind, Edge, Face, InstanceInfo, Loop, NurbsCurve,
+    NurbsSurface, SurfaceData, SurfaceKind, Transform3D,
 };
 use crate::xb::{ParseResult, XtError};
 
@@ -588,6 +589,25 @@ fn quantize_vec3(v: [f64; 3]) -> QuantVec3 {
     QuantVec3([q(v[0]), q(v[1]), q(v[2])])
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct QuantStyle([i64; 4]);
+
+fn quantize_style(rgb: [f64; 3], transparency: Option<f64>) -> QuantStyle {
+    let q = |x: f64| -> i64 {
+        if !x.is_finite() {
+            0
+        } else {
+            (x.clamp(0.0, 1.0) * 1e6).round() as i64
+        }
+    };
+    QuantStyle([
+        q(rgb[0]),
+        q(rgb[1]),
+        q(rgb[2]),
+        q(transparency.unwrap_or(0.0)),
+    ])
+}
+
 struct StepBuilder {
     scale: f64,
     units: StepUnits,
@@ -598,6 +618,7 @@ struct StepBuilder {
     data_buf: String,
     pt_cache: BTreeMap<QuantVec3, usize>,
     dir_cache: BTreeMap<QuantVec3, usize>,
+    style_cache: BTreeMap<QuantStyle, usize>,
     vert_cache: BTreeMap<i64, usize>,
     surf_cache: BTreeMap<i64, (usize, bool)>,
     edge_cache: BTreeMap<i64, (usize, usize, usize, bool)>,
@@ -619,10 +640,76 @@ impl StepBuilder {
             data_buf: String::with_capacity(16 * 1024),
             pt_cache: BTreeMap::new(),
             dir_cache: BTreeMap::new(),
+            style_cache: BTreeMap::new(),
             vert_cache: BTreeMap::new(),
             surf_cache: BTreeMap::new(),
             edge_cache: BTreeMap::new(),
         }
+    }
+
+    fn reset_geom_caches(&mut self) {
+        self.vert_cache.clear();
+        self.surf_cache.clear();
+        self.edge_cache.clear();
+    }
+
+    fn style_assignment(&mut self, app: &Appearance) -> Option<usize> {
+        let rgb = app.color_rgb?;
+        let transp = app.transparency.filter(|&t| t > 1e-6);
+        let key = quantize_style(rgb, transp);
+        if let Some(&psa) = self.style_cache.get(&key) {
+            return Some(psa);
+        }
+        let cid = self.alloc_entity_start();
+        self.data_buf.push_str("COLOUR_RGB('',");
+        push_step_real(&mut self.data_buf, rgb[0].clamp(0.0, 1.0));
+        self.data_buf.push(',');
+        push_step_real(&mut self.data_buf, rgb[1].clamp(0.0, 1.0));
+        self.data_buf.push(',');
+        push_step_real(&mut self.data_buf, rgb[2].clamp(0.0, 1.0));
+        self.data_buf.push(')');
+        self.finish_entity();
+
+        let fasc = self.emit_str(&format!("FILL_AREA_STYLE_COLOUR('',#{cid})"));
+        let fas = self.emit_str(&format!("FILL_AREA_STYLE('',(#{fasc}))"));
+        let ssfa = self.emit_str(&format!("SURFACE_STYLE_FILL_AREA(#{fas})"));
+        let sss = if let Some(t) = transp {
+            let sst = self.alloc_entity_start();
+            self.data_buf.push_str("SURFACE_STYLE_TRANSPARENT(");
+            push_step_real(&mut self.data_buf, t.clamp(0.0, 1.0));
+            self.data_buf.push(')');
+            self.finish_entity();
+            let ssr = self.emit_str(&format!(
+                "SURFACE_STYLE_RENDERING_WITH_PROPERTIES(.CONSTANT_SHADING.,#{cid},(#{sst}))"
+            ));
+            self.emit_str(&format!("SURFACE_SIDE_STYLE('',(#{ssfa},#{ssr}))"))
+        } else {
+            self.emit_str(&format!("SURFACE_SIDE_STYLE('',(#{ssfa}))"))
+        };
+        let ssu = self.emit_str(&format!("SURFACE_STYLE_USAGE(.BOTH.,#{sss})"));
+        let psa = self.emit_str(&format!("PRESENTATION_STYLE_ASSIGNMENT((#{ssu}))"));
+        self.style_cache.insert(key, psa);
+        Some(psa)
+    }
+
+    fn emit_styled_item(&mut self, target_id: usize, app: &Appearance, styled_ids: &mut Vec<usize>) {
+        if let Some(psa) = self.style_assignment(app) {
+            let si = self.emit_str(&format!("STYLED_ITEM('',(#{psa}),#{target_id})"));
+            styled_ids.push(si);
+        }
+    }
+
+    fn emit_presentation_if_any(&mut self, styled_ids: &[usize], geom_ctx: usize) {
+        if styled_ids.is_empty() {
+            return;
+        }
+        let eid = self.alloc_entity_start();
+        self.data_buf
+            .push_str("MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(");
+        push_id_list(&mut self.data_buf, styled_ids);
+        let _ = write!(self.data_buf, "),#{geom_ctx})");
+        self.finish_entity();
+        let _ = eid;
     }
 
     fn alloc_entity_start(&mut self) -> usize {
@@ -1131,24 +1218,39 @@ impl StepBuilder {
         eid
     }
 
-    fn emit_edge(
+    fn emit_edge_xform(
         &mut self,
         edge: &Edge,
         first_coedge: &Coedge,
         model: &BrepModel,
+        tf: Option<&Transform3D>,
     ) -> (usize, usize, usize, bool) {
         if let Some(&cached) = self.edge_cache.get(&edge.index) {
             return cached;
         }
-        let (cid, fallback_pt) = self.emit_curve_geom(&edge.curve);
+        let owned_curve;
+        let curve_ref = if let Some(t) = tf {
+            owned_curve = transform_curve_data(&edge.curve, t);
+            &owned_curve
+        } else {
+            &edge.curve
+        };
+        let (cid, fallback_pt) = self.emit_curve_geom(curve_ref);
         let (sv_idx, ev_idx) = if first_coedge.sense.is_plus() {
             (first_coedge.start_vertex, first_coedge.end_vertex)
         } else {
             (first_coedge.end_vertex, first_coedge.start_vertex)
         };
 
+        let xform_pt = |p: [f64; 3]| -> [f64; 3] {
+            match tf {
+                Some(t) => t.apply_point(p),
+                None => p,
+            }
+        };
+
         let v1_id = match sv_idx.and_then(|i| model.vertices.get(&i)) {
-            Some(v) => self.emit_vertex(v.index, v.point),
+            Some(v) => self.emit_vertex(v.index, xform_pt(v.point)),
             None => {
                 let p = self.point(fallback_pt);
                 let eid = self.alloc_entity_start();
@@ -1158,19 +1260,21 @@ impl StepBuilder {
             }
         };
         let v2_id = match ev_idx.and_then(|i| model.vertices.get(&i)) {
-            Some(v) => self.emit_vertex(v.index, v.point),
+            Some(v) => self.emit_vertex(v.index, xform_pt(v.point)),
             None => v1_id,
         };
 
         let mut edge_same_sense = edge.sense.is_plus();
-        if let CurveKind::Intersection { points } = &edge.curve.kind {
+        if let CurveKind::Intersection { points } = &curve_ref.kind {
             if let (Some(si), Some(ei)) = (sv_idx, ev_idx) {
                 if si != ei && points.len() >= 2 {
                     if let (Some(vs), Some(ve)) = (model.vertices.get(&si), model.vertices.get(&ei)) {
                         let p0 = points[0];
                         let p1 = points[points.len() - 1];
-                        let d_fwd = sq_dist(p0, vs.point) + sq_dist(p1, ve.point);
-                        let d_rev = sq_dist(p1, vs.point) + sq_dist(p0, ve.point);
+                        let sp = xform_pt(vs.point);
+                        let ep = xform_pt(ve.point);
+                        let d_fwd = sq_dist(p0, sp) + sq_dist(p1, ep);
+                        let d_rev = sq_dist(p1, sp) + sq_dist(p0, ep);
                         edge_same_sense = d_fwd <= d_rev;
                     }
                 }
@@ -1187,6 +1291,367 @@ impl StepBuilder {
         let res = (eid, v1_id, v2_id, edge_same_sense);
         self.edge_cache.insert(edge.index, res);
         res
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_body_product(
+        &mut self,
+        prod_name: &str,
+        shells: &[(Option<i64>, Vec<&Face>, i64, &Appearance)],
+        model: &BrepModel,
+        first_coedge_for_edge: &BTreeMap<i64, &Coedge>,
+        tf: Option<&Transform3D>,
+        override_app: Option<&Appearance>,
+        prod_ctx: usize,
+        pdc: usize,
+        geom_ctx: usize,
+        root_ax: usize,
+    ) -> (usize, usize) {
+        self.reset_geom_caches();
+
+        let mut s_name = String::new();
+        push_step_str(&mut s_name, prod_name);
+        let prod = self.emit_str(&format!("PRODUCT({s_name},{s_name},'',(#{prod_ctx}))"));
+        let pdf = self.emit_str(&format!("PRODUCT_DEFINITION_FORMATION('','',#{prod})"));
+        let pd = self.emit_str(&format!("PRODUCT_DEFINITION('design','',#{pdf},#{pdc})"));
+        let pds = self.emit_str(&format!("PRODUCT_DEFINITION_SHAPE('','',#{pd})"));
+
+        let num_shells = shells.len();
+        let det_neg = tf.is_some_and(|t| t.det() < 0.0);
+        let mut solid_items = Vec::new();
+        let mut sheet_items = Vec::new();
+        let mut styled_items = Vec::new();
+
+        for (_sh_idx, faces_in_shell, btype, body_app) in shells {
+            let mut face_ids = Vec::new();
+            let mut edge_use_count: BTreeMap<i64, usize> = BTreeMap::new();
+
+            for &f in faces_in_shell {
+                let (sid, surf_flip) = if let Some(t) = tf {
+                    let xf_surf = transform_surface_data(&f.surface, t);
+                    self.emit_surface(f.surface_index, &xf_surf)
+                } else {
+                    self.emit_surface(f.surface_index, &f.surface)
+                };
+                let outer_idx = pick_outer_loop_index(f, model);
+                let mut bound_ids = Vec::new();
+
+                for (li, lp) in f.loops.iter().enumerate() {
+                    let mut oe_ids = Vec::new();
+                    for ce in &lp.coedges {
+                        let Some(edge) = model.edges.get(&ce.edge_index) else {
+                            continue;
+                        };
+                        *edge_use_count.entry(edge.index).or_insert(0) += 1;
+                        let ref_ce = first_coedge_for_edge[&edge.index];
+                        let (ec_id, _, _, _) = self.emit_edge_xform(edge, ref_ce, model, tf);
+                        let oe_id = self.alloc_entity_start();
+                        let _ = write!(
+                            self.data_buf,
+                            "ORIENTED_EDGE('',*,*,#{ec_id},{})",
+                            step_bool(ce.sense.is_plus())
+                        );
+                        self.finish_entity();
+                        oe_ids.push(oe_id);
+                    }
+                    if oe_ids.is_empty() {
+                        continue;
+                    }
+                    let loop_id = self.alloc_entity_start();
+                    self.data_buf.push_str("EDGE_LOOP('',(");
+                    push_id_list(&mut self.data_buf, &oe_ids);
+                    self.data_buf.push_str("))");
+                    self.finish_entity();
+
+                    let btype_str = if li == outer_idx {
+                        "FACE_OUTER_BOUND"
+                    } else {
+                        "FACE_BOUND"
+                    };
+                    let bid = self.alloc_entity_start();
+                    let _ = write!(self.data_buf, "{btype_str}('',#{loop_id},.T.)");
+                    self.finish_entity();
+                    bound_ids.push(bid);
+                }
+
+                if bound_ids.is_empty() {
+                    continue;
+                }
+                let mut face_sense = if surf_flip {
+                    !f.sense.is_plus()
+                } else {
+                    f.sense.is_plus()
+                };
+                if det_neg {
+                    face_sense = !face_sense;
+                }
+                let af_id = self.alloc_entity_start();
+                self.data_buf.push_str("ADVANCED_FACE('',(");
+                push_id_list(&mut self.data_buf, &bound_ids);
+                let _ = write!(self.data_buf, "),#{sid},{})", step_bool(face_sense));
+                self.finish_entity();
+                self.emit_styled_item(af_id, &f.appearance, &mut styled_items);
+                face_ids.push(af_id);
+            }
+
+            if face_ids.is_empty() {
+                continue;
+            }
+            let is_closed = !face_ids.is_empty()
+                && edge_use_count.values().all(|&c| c >= 2)
+                && *btype != 2;
+
+            let eff_app = match override_app {
+                Some(ov) => body_app.inherit_from(ov),
+                None => (*body_app).clone(),
+            };
+
+            if is_closed {
+                let shell = self.alloc_entity_start();
+                self.data_buf.push_str("CLOSED_SHELL('',(");
+                push_id_list(&mut self.data_buf, &face_ids);
+                self.data_buf.push_str("))");
+                self.finish_entity();
+
+                let item_name = if num_shells > 1 {
+                    format!("{prod_name}_{}", solid_items.len() + 1)
+                } else {
+                    prod_name.to_string()
+                };
+                let msb = self.alloc_entity_start();
+                self.data_buf.push_str("MANIFOLD_SOLID_BREP(");
+                push_step_str(&mut self.data_buf, &item_name);
+                let _ = write!(self.data_buf, ",#{shell})");
+                self.finish_entity();
+                self.emit_styled_item(msb, &eff_app, &mut styled_items);
+                solid_items.push(msb);
+            } else {
+                let shell = self.alloc_entity_start();
+                self.data_buf.push_str("OPEN_SHELL('',(");
+                push_id_list(&mut self.data_buf, &face_ids);
+                self.data_buf.push_str("))");
+                self.finish_entity();
+
+                let sbsm = self.alloc_entity_start();
+                let _ = write!(self.data_buf, "SHELL_BASED_SURFACE_MODEL('',(#{shell}))");
+                self.finish_entity();
+                self.emit_styled_item(sbsm, &eff_app, &mut styled_items);
+                sheet_items.push(sbsm);
+            }
+        }
+
+        let mut all_items = Vec::with_capacity(solid_items.len() + sheet_items.len() + 1);
+        all_items.extend_from_slice(&solid_items);
+        all_items.extend_from_slice(&sheet_items);
+        all_items.push(root_ax);
+
+        let rep_kind = if !solid_items.is_empty() && sheet_items.is_empty() {
+            "ADVANCED_BREP_SHAPE_REPRESENTATION"
+        } else if !sheet_items.is_empty() && solid_items.is_empty() {
+            "MANIFOLD_SURFACE_SHAPE_REPRESENTATION"
+        } else {
+            "SHAPE_REPRESENTATION"
+        };
+        let rep = self.alloc_entity_start();
+        let _ = write!(self.data_buf, "{rep_kind}('',(");
+        push_id_list(&mut self.data_buf, &all_items);
+        let _ = write!(self.data_buf, "),#{geom_ctx})");
+        self.finish_entity();
+        self.emit_str(&format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{rep})"));
+        self.emit_presentation_if_any(&styled_items, geom_ctx);
+        (pd, rep)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_assembly_node(
+        &mut self,
+        asm: &AssemblyInfo,
+        asm_seq: usize,
+        asm_map: &BTreeMap<i64, &AssemblyInfo>,
+        body_map: &BTreeMap<i64, &BodyInfo>,
+        inst_map: &BTreeMap<i64, &InstanceInfo>,
+        body_shells_map: &BTreeMap<i64, Vec<(Option<i64>, Vec<&Face>, i64, &Appearance)>>,
+        model: &BrepModel,
+        first_coedge_for_edge: &BTreeMap<i64, &Coedge>,
+        prod_ctx: usize,
+        pdc: usize,
+        geom_ctx: usize,
+        root_ax: usize,
+        asm_cache: &mut BTreeMap<i64, (usize, usize)>,
+        body_cache: &mut BTreeMap<i64, (usize, usize)>,
+        visiting: &mut BTreeSet<i64>,
+        occ_counter: &mut usize,
+    ) -> Option<(usize, usize)> {
+        if let Some(&cached) = asm_cache.get(&asm.index) {
+            return Some(cached);
+        }
+        if !visiting.insert(asm.index) {
+            return None;
+        }
+
+        let mut child_placements: Vec<((usize, usize), usize, String)> = Vec::new();
+        for (local_i, &inst_idx) in asm.instance_indices.iter().enumerate() {
+            let Some(&inst) = inst_map.get(&inst_idx) else {
+                continue;
+            };
+            let Some(part_idx) = inst.part_index else {
+                continue;
+            };
+
+            let tf = inst.transform.as_ref();
+            let occ_name = inst
+                .name
+                .clone()
+                .or_else(|| {
+                    body_map
+                        .get(&part_idx)
+                        .and_then(|b| b.name.clone())
+                        .map(|bn| format!("{bn}:{}", local_i + 1))
+                })
+                .unwrap_or_else(|| format!("Component_{}", local_i + 1));
+
+            if let Some(&body) = body_map.get(&part_idx) {
+                let Some(shells) = body_shells_map.get(&body.index) else {
+                    continue;
+                };
+                if shells.is_empty() {
+                    continue;
+                }
+                let is_rigid = tf.is_none_or(|t| t.is_rigid());
+                let (child_pd_rep, placed_ax) = if is_rigid {
+                    let cached = if let Some(&c) = body_cache.get(&body.index) {
+                        c
+                    } else {
+                        let bname = body
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| format!("{}_part_{}", self.name, body.index));
+                        let c = self.emit_body_product(
+                            &bname,
+                            shells,
+                            model,
+                            first_coedge_for_edge,
+                            None,
+                            None,
+                            prod_ctx,
+                            pdc,
+                            geom_ctx,
+                            root_ax,
+                        );
+                        body_cache.insert(body.index, c);
+                        c
+                    };
+                    let pax = match tf {
+                        Some(t) if !t.is_identity() => {
+                            let r = &t.rotation;
+                            let x_col = [r[0][0], r[1][0], r[2][0]];
+                            let z_col = [r[0][2], r[1][2], r[2][2]];
+                            self.axis2(t.translation, z_col, x_col)
+                        }
+                        _ => root_ax,
+                    };
+                    (cached, pax)
+                } else {
+                    let bname = format!(
+                        "{}_inst_{}",
+                        body.name.as_deref().unwrap_or(&self.name),
+                        inst.index
+                    );
+                    let c = self.emit_body_product(
+                        &bname,
+                        shells,
+                        model,
+                        first_coedge_for_edge,
+                        tf,
+                        Some(&inst.appearance),
+                        prod_ctx,
+                        pdc,
+                        geom_ctx,
+                        root_ax,
+                    );
+                    (c, root_ax)
+                };
+                child_placements.push((child_pd_rep, placed_ax, occ_name));
+            } else if let Some(&sub_asm) = asm_map.get(&part_idx) {
+                if let Some(sub_pd_rep) = self.emit_assembly_node(
+                    sub_asm,
+                    asm_seq + child_placements.len() + 1,
+                    asm_map,
+                    body_map,
+                    inst_map,
+                    body_shells_map,
+                    model,
+                    first_coedge_for_edge,
+                    prod_ctx,
+                    pdc,
+                    geom_ctx,
+                    root_ax,
+                    asm_cache,
+                    body_cache,
+                    visiting,
+                    occ_counter,
+                ) {
+                    let pax = match tf {
+                        Some(t) if !t.is_identity() => {
+                            let r = &t.rotation;
+                            let x_col = [r[0][0], r[1][0], r[2][0]];
+                            let z_col = [r[0][2], r[1][2], r[2][2]];
+                            self.axis2(t.translation, z_col, x_col)
+                        }
+                        _ => root_ax,
+                    };
+                    child_placements.push((sub_pd_rep, pax, occ_name));
+                }
+            }
+        }
+
+        visiting.remove(&asm.index);
+        if child_placements.is_empty() {
+            return None;
+        }
+
+        let asm_name = asm.name.clone().unwrap_or_else(|| {
+            if asm_seq == 0 {
+                self.name.clone()
+            } else {
+                format!("{}_asm_{}", self.name, asm.index)
+            }
+        });
+        let mut s_asm = String::new();
+        push_step_str(&mut s_asm, &asm_name);
+        let prod = self.emit_str(&format!("PRODUCT({s_asm},{s_asm},'',(#{prod_ctx}))"));
+        let pdf = self.emit_str(&format!("PRODUCT_DEFINITION_FORMATION('','',#{prod})"));
+        let pd = self.emit_str(&format!("PRODUCT_DEFINITION('design','',#{pdf},#{pdc})"));
+        let pds = self.emit_str(&format!("PRODUCT_DEFINITION_SHAPE('','',#{pd})"));
+        let rep = self.emit_str(&format!(
+            "SHAPE_REPRESENTATION({s_asm},(#{root_ax}),#{geom_ctx})"
+        ));
+        self.emit_str(&format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{rep})"));
+
+        for ((child_pd, child_rep), placed_ax, occ_name) in child_placements {
+            *occ_counter += 1;
+            let mut s_occ_id = String::new();
+            push_step_str(&mut s_occ_id, &format!("NAUO_{}", *occ_counter));
+            let mut s_occ_name = String::new();
+            push_step_str(&mut s_occ_name, &occ_name);
+
+            let idt = self.emit_str(&format!(
+                "ITEM_DEFINED_TRANSFORMATION('','',#{root_ax},#{placed_ax})"
+            ));
+            let nauo = self.emit_str(&format!(
+                "NEXT_ASSEMBLY_USAGE_OCCURRENCE({s_occ_id},{s_occ_name},'',#{pd},#{child_pd},$)"
+            ));
+            let nauo_pds = self.emit_str(&format!("PRODUCT_DEFINITION_SHAPE('','',#{nauo})"));
+            let rel = self.emit_str(&format!(
+                "(REPRESENTATION_RELATIONSHIP('','',#{child_rep},#{rep}) REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#{idt}) SHAPE_REPRESENTATION_RELATIONSHIP())"
+            ));
+            self.emit_str(&format!(
+                "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#{rel},#{nauo_pds})"
+            ));
+        }
+
+        asm_cache.insert(asm.index, (pd, rep));
+        Some((pd, rep))
     }
 
     fn build(mut self, model: &BrepModel) -> String {
@@ -1206,15 +1671,9 @@ impl StepBuilder {
         };
         self.emit_str(&proto);
         let prod_ctx = self.emit_str(&format!("PRODUCT_CONTEXT('',#{app_ctx},'mechanical')"));
-        let mut s_name = String::new();
-        push_step_str(&mut s_name, &self.name);
-        let prod = self.emit_str(&format!("PRODUCT({s_name},{s_name},'',(#{prod_ctx}))"));
-        let pdf = self.emit_str(&format!("PRODUCT_DEFINITION_FORMATION('','',#{prod})"));
         let pdc = self.emit_str(&format!(
             "PRODUCT_DEFINITION_CONTEXT('part definition',#{app_ctx},'design')"
         ));
-        let pd = self.emit_str(&format!("PRODUCT_DEFINITION('design','',#{pdf},#{pdc})"));
-        let pds = self.emit_str(&format!("PRODUCT_DEFINITION_SHAPE('','',#{pd})"));
 
         let len_u = self.emit_str(match self.units {
             StepUnits::Mm => "(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.))",
@@ -1240,144 +1699,128 @@ impl StepBuilder {
             }
         }
 
-        let mut shell_body_type: BTreeMap<Option<i64>, i64> = BTreeMap::new();
-        for b in &model.bodies {
-            let bt = b.body_type.unwrap_or(1);
-            for &sh in &b.shell_indices {
-                shell_body_type.entry(Some(sh)).or_insert(bt);
-            }
-        }
-
         let mut shell_faces: BTreeMap<Option<i64>, Vec<&Face>> = BTreeMap::new();
         for f in model.faces.values() {
             shell_faces.entry(f.shell_index).or_default().push(f);
         }
 
-        let num_shells = shell_faces.len();
-        let mut solid_items = Vec::new();
-        let mut sheet_items = Vec::new();
+        let default_app = Appearance::default();
+        let mut emitted_assembly = false;
 
-        for (sh_idx, faces_in_shell) in shell_faces {
-            let mut face_ids = Vec::new();
-            let mut edge_use_count: BTreeMap<i64, usize> = BTreeMap::new();
+        if !model.assemblies.is_empty() && !model.instances.is_empty() {
+            let asm_map: BTreeMap<i64, &AssemblyInfo> =
+                model.assemblies.iter().map(|a| (a.index, a)).collect();
+            let body_map: BTreeMap<i64, &BodyInfo> =
+                model.bodies.iter().map(|b| (b.index, b)).collect();
+            let inst_map: BTreeMap<i64, &InstanceInfo> =
+                model.instances.iter().map(|i| (i.index, i)).collect();
 
-            for f in faces_in_shell {
-                let (sid, surf_flip) = self.emit_surface(f.surface_index, &f.surface);
-                let outer_idx = pick_outer_loop_index(f, model);
-                let mut bound_ids = Vec::new();
-
-                for (li, lp) in f.loops.iter().enumerate() {
-                    let mut oe_ids = Vec::new();
-                    for ce in &lp.coedges {
-                        let Some(edge) = model.edges.get(&ce.edge_index) else {
-                            continue;
-                        };
-                        *edge_use_count.entry(edge.index).or_insert(0) += 1;
-                        let ref_ce = first_coedge_for_edge[&edge.index];
-                        let (ec_id, _, _, _) = self.emit_edge(edge, ref_ce, model);
-                        let oe_id = self.alloc_entity_start();
-                        let _ = write!(
-                            self.data_buf,
-                            "ORIENTED_EDGE('',*,*,#{ec_id},{})",
-                            step_bool(ce.sense.is_plus())
-                        );
-                        self.finish_entity();
-                        oe_ids.push(oe_id);
+            let mut referenced_asms = BTreeSet::new();
+            for inst in &model.instances {
+                if let Some(pi) = inst.part_index {
+                    if asm_map.contains_key(&pi) {
+                        referenced_asms.insert(pi);
                     }
-                    if oe_ids.is_empty() {
-                        continue;
-                    }
-                    let loop_id = self.alloc_entity_start();
-                    self.data_buf.push_str("EDGE_LOOP('',(");
-                    push_id_list(&mut self.data_buf, &oe_ids);
-                    self.data_buf.push_str("))");
-                    self.finish_entity();
-
-                    let btype = if li == outer_idx {
-                        "FACE_OUTER_BOUND"
-                    } else {
-                        "FACE_BOUND"
-                    };
-                    let bid = self.alloc_entity_start();
-                    let _ = write!(self.data_buf, "{btype}('',#{loop_id},.T.)");
-                    self.finish_entity();
-                    bound_ids.push(bid);
                 }
-
-                if bound_ids.is_empty() {
-                    continue;
-                }
-                let face_sense = if surf_flip {
-                    !f.sense.is_plus()
-                } else {
-                    f.sense.is_plus()
-                };
-                let af_id = self.alloc_entity_start();
-                self.data_buf.push_str("ADVANCED_FACE('',(");
-                push_id_list(&mut self.data_buf, &bound_ids);
-                let _ = write!(self.data_buf, "),#{sid},{})", step_bool(face_sense));
-                self.finish_entity();
-                face_ids.push(af_id);
             }
 
-            if face_ids.is_empty() {
-                continue;
+            let mut body_shells_map: BTreeMap<i64, Vec<(Option<i64>, Vec<&Face>, i64, &Appearance)>> =
+                BTreeMap::new();
+            for b in &model.bodies {
+                let bt = b.body_type.unwrap_or(1);
+                let mut entries = Vec::new();
+                for &sh in &b.shell_indices {
+                    if let Some(fs) = shell_faces.get(&Some(sh)) {
+                        entries.push((Some(sh), fs.clone(), bt, &b.appearance));
+                    }
+                }
+                if !entries.is_empty() {
+                    body_shells_map.insert(b.index, entries);
+                }
             }
-            let btype = shell_body_type.get(&sh_idx).copied().unwrap_or(1);
-            let is_closed = !face_ids.is_empty()
-                && edge_use_count.values().all(|&c| c >= 2)
-                && btype != 2;
 
-            if is_closed {
-                let shell = self.alloc_entity_start();
-                self.data_buf.push_str("CLOSED_SHELL('',(");
-                push_id_list(&mut self.data_buf, &face_ids);
-                self.data_buf.push_str("))");
-                self.finish_entity();
+            let mut asm_cache = BTreeMap::new();
+            let mut body_cache = BTreeMap::new();
+            let mut visiting = BTreeSet::new();
+            let mut occ_counter = 0usize;
 
-                let item_name = if num_shells > 1 {
-                    format!("{}_{}", self.name, solid_items.len() + 1)
-                } else {
-                    self.name.clone()
-                };
-                let msb = self.alloc_entity_start();
-                self.data_buf.push_str("MANIFOLD_SOLID_BREP(");
-                push_step_str(&mut self.data_buf, &item_name);
-                let _ = write!(self.data_buf, ",#{shell})");
-                self.finish_entity();
-                solid_items.push(msb);
+            let root_asms: Vec<&AssemblyInfo> = model
+                .assemblies
+                .iter()
+                .filter(|a| !referenced_asms.contains(&a.index))
+                .collect();
+            let targets: Vec<&AssemblyInfo> = if root_asms.is_empty() {
+                model.assemblies.iter().collect()
             } else {
-                let shell = self.alloc_entity_start();
-                self.data_buf.push_str("OPEN_SHELL('',(");
-                push_id_list(&mut self.data_buf, &face_ids);
-                self.data_buf.push_str("))");
-                self.finish_entity();
+                root_asms
+            };
 
-                let sbsm = self.alloc_entity_start();
-                let _ = write!(self.data_buf, "SHELL_BASED_SURFACE_MODEL('',(#{shell}))");
-                self.finish_entity();
-                sheet_items.push(sbsm);
+            for (seq, asm) in targets.into_iter().enumerate() {
+                if self
+                    .emit_assembly_node(
+                        asm,
+                        seq,
+                        &asm_map,
+                        &body_map,
+                        &inst_map,
+                        &body_shells_map,
+                        model,
+                        &first_coedge_for_edge,
+                        prod_ctx,
+                        pdc,
+                        geom_ctx,
+                        root_ax,
+                        &mut asm_cache,
+                        &mut body_cache,
+                        &mut visiting,
+                        &mut occ_counter,
+                    )
+                    .is_some()
+                {
+                    emitted_assembly = true;
+                }
             }
         }
 
-        let mut all_items = Vec::with_capacity(solid_items.len() + sheet_items.len() + 1);
-        all_items.extend_from_slice(&solid_items);
-        all_items.extend_from_slice(&sheet_items);
-        all_items.push(root_ax);
+        if !emitted_assembly {
+            let mut shell_meta: BTreeMap<Option<i64>, (i64, &Appearance)> = BTreeMap::new();
+            for b in &model.bodies {
+                let bt = b.body_type.unwrap_or(1);
+                for &sh in &b.shell_indices {
+                    shell_meta.entry(Some(sh)).or_insert((bt, &b.appearance));
+                }
+            }
+            let shells: Vec<(Option<i64>, Vec<&Face>, i64, &Appearance)> = shell_faces
+                .into_iter()
+                .map(|(sh_idx, fs)| {
+                    let (bt, app) = shell_meta.get(&sh_idx).copied().unwrap_or((1, &default_app));
+                    (sh_idx, fs, bt, app)
+                })
+                .collect();
 
-        let rep_kind = if !solid_items.is_empty() && sheet_items.is_empty() {
-            "ADVANCED_BREP_SHAPE_REPRESENTATION"
-        } else if !sheet_items.is_empty() && solid_items.is_empty() {
-            "MANIFOLD_SURFACE_SHAPE_REPRESENTATION"
-        } else {
-            "SHAPE_REPRESENTATION"
-        };
-        let rep = self.alloc_entity_start();
-        let _ = write!(self.data_buf, "{rep_kind}('',(");
-        push_id_list(&mut self.data_buf, &all_items);
-        let _ = write!(self.data_buf, "),#{geom_ctx})");
-        self.finish_entity();
-        self.emit_str(&format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{rep})"));
+            let top_name = if model.bodies.len() == 1 {
+                model.bodies[0]
+                    .name
+                    .as_deref()
+                    .unwrap_or(&self.name)
+                    .to_string()
+            } else {
+                self.name.clone()
+            };
+
+            let _ = self.emit_body_product(
+                &top_name,
+                &shells,
+                model,
+                &first_coedge_for_edge,
+                None,
+                None,
+                prod_ctx,
+                pdc,
+                geom_ctx,
+                root_ax,
+            );
+        }
 
         let schema_str = match self.schema {
             StepSchema::Ap214 => "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }",

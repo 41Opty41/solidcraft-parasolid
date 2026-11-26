@@ -5,3 +5,5 @@
 __pycache__/
 .pytest_cache/
 solidcraft-parasolid/solidcraft-parasolid.wasm
+solidcraft-parasolid-export/solidcraft-parasolid-export.wasm
+docs/xtopen_web.wasm

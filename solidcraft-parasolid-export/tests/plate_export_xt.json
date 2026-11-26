@@ -1,0 +1,13 @@
+{
+  "entry": "export-xt",
+  "design": "plate_with_hole.step",
+  "params": {
+    "quality": "standard",
+    "merge_coplanar": true
+  },
+  "expect": {
+    "reply": {
+      "format": "solidcraft-parasolid-export.export-xt"
+    }
+  }
+}

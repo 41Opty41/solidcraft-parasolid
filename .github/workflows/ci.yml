@@ -36,14 +36,19 @@ jobs:
           chmod +x "$SC_CLI"
           echo "SC_CLI=$SC_CLI" >> "$GITHUB_ENV"
 
-      - name: Build native CLI and WASM Component
+      - name: Build native CLI and WASM modules
         run: |
           cargo build --release -p xtopen-cli
           cargo build --release --target wasm32-unknown-unknown -p solidcraft-parasolid-wasm
+          cargo build --release --target wasm32-unknown-unknown -p solidcraft-parasolid-export-wasm
+          cargo build --release --target wasm32-unknown-unknown -p xtopen-web-wasm
           "$WASM_TOOLS" component new target/wasm32-unknown-unknown/release/solidcraft_parasolid_wasm.wasm -o solidcraft-parasolid/solidcraft-parasolid.wasm
+          "$WASM_TOOLS" component new target/wasm32-unknown-unknown/release/solidcraft_parasolid_export_wasm.wasm -o solidcraft-parasolid-export/solidcraft-parasolid-export.wasm
 
-      - name: Run SolidCraft plugin check and E2E tests
+      - name: Run SolidCraft plugin check and E2E tests (Importer & Exporter)
         run: |
           "$SC_CLI" --version
           "$SC_CLI" plugin check solidcraft-parasolid
           "$SC_CLI" plugin test solidcraft-parasolid --require-cases
+          "$SC_CLI" plugin check solidcraft-parasolid-export
+          "$SC_CLI" plugin test solidcraft-parasolid-export --require-cases

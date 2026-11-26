@@ -1,7 +1,7 @@
 {
   "id": "solidcraft-parasolid",
   "name": "Parasolid XT Importer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Clean-room Parasolid XT (.x_b, .x_t, .x_p) B-rep importer powered by xtopen.",
   "capabilities": ["formats@0.2"],
   "runtime": {

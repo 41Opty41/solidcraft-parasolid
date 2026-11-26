@@ -5,6 +5,224 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::xb::{ParseResult, XtHeader, XtNode, XtValue};
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Transform3D {
+    pub rotation: [[f64; 3]; 3],
+    pub translation: [f64; 3],
+    pub scale: f64,
+}
+
+impl Default for Transform3D {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
+impl Transform3D {
+    pub fn identity() -> Self {
+        Self {
+            rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+            scale: 1.0,
+        }
+    }
+
+    pub fn from_xt(node: &XtNode) -> Self {
+        let raw_rot = node_floats(Some(node), "rotation_matrix");
+        let rotation = if raw_rot.len() >= 9 {
+            [
+                [
+                    safe_float(Some(raw_rot[0]), 1.0),
+                    safe_float(Some(raw_rot[1]), 0.0),
+                    safe_float(Some(raw_rot[2]), 0.0),
+                ],
+                [
+                    safe_float(Some(raw_rot[3]), 0.0),
+                    safe_float(Some(raw_rot[4]), 1.0),
+                    safe_float(Some(raw_rot[5]), 0.0),
+                ],
+                [
+                    safe_float(Some(raw_rot[6]), 0.0),
+                    safe_float(Some(raw_rot[7]), 0.0),
+                    safe_float(Some(raw_rot[8]), 1.0),
+                ],
+            ]
+        } else {
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        };
+        let translation = safe_vec3(node.get_vec3("translation_vector"), [0.0, 0.0, 0.0]);
+        let mut scale = safe_float(node.get_f64("scale"), 1.0);
+        if scale.abs() < 1e-15 {
+            scale = 1.0;
+        }
+        Self {
+            rotation,
+            translation,
+            scale,
+        }
+    }
+
+    pub fn det(&self) -> f64 {
+        let r = &self.rotation;
+        r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+            - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+            + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0])
+    }
+
+    pub fn is_identity(&self) -> bool {
+        let r = &self.rotation;
+        let t = &self.translation;
+        let rot_ok = (r[0][0] - 1.0).abs() < 1e-12
+            && r[0][1].abs() < 1e-12
+            && r[0][2].abs() < 1e-12
+            && r[1][0].abs() < 1e-12
+            && (r[1][1] - 1.0).abs() < 1e-12
+            && r[1][2].abs() < 1e-12
+            && r[2][0].abs() < 1e-12
+            && r[2][1].abs() < 1e-12
+            && (r[2][2] - 1.0).abs() < 1e-12;
+        let tr_ok = t[0].abs() < 1e-12 && t[1].abs() < 1e-12 && t[2].abs() < 1e-12;
+        rot_ok && tr_ok && (self.scale - 1.0).abs() < 1e-12
+    }
+
+    pub fn is_rigid(&self) -> bool {
+        (self.scale - 1.0).abs() < 1e-9 && self.det() > 0.0
+    }
+
+    pub fn apply_point(&self, p: [f64; 3]) -> [f64; 3] {
+        let r = &self.rotation;
+        let s = self.scale;
+        [
+            s * (r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2]) + self.translation[0],
+            s * (r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2]) + self.translation[1],
+            s * (r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2]) + self.translation[2],
+        ]
+    }
+
+    pub fn apply_dir(&self, d: [f64; 3]) -> [f64; 3] {
+        let r = &self.rotation;
+        [
+            r[0][0] * d[0] + r[0][1] * d[1] + r[0][2] * d[2],
+            r[1][0] * d[0] + r[1][1] * d[1] + r[1][2] * d[2],
+            r[2][0] * d[0] + r[2][1] * d[1] + r[2][2] * d[2],
+        ]
+    }
+
+    pub fn compose(&self, child: &Transform3D) -> Transform3D {
+        let mut rot = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                rot[i][j] = self.rotation[i][0] * child.rotation[0][j]
+                    + self.rotation[i][1] * child.rotation[1][j]
+                    + self.rotation[i][2] * child.rotation[2][j];
+            }
+        }
+        let translation = self.apply_point(child.translation);
+        Transform3D {
+            rotation: rot,
+            translation,
+            scale: self.scale * child.scale,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttributeValue {
+    Text(String),
+    Reals(Vec<f64>),
+    Ints(Vec<i64>),
+    Vec3s(Vec<[f64; 3]>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attribute {
+    pub index: i64,
+    pub name: String,
+    pub owner_index: Option<i64>,
+    pub values: Vec<AttributeValue>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Appearance {
+    pub color_rgb: Option<[f64; 3]>,
+    pub transparency: Option<f64>,
+    pub name: Option<String>,
+    pub layer: Option<i64>,
+    pub density: Option<f64>,
+}
+
+impl Appearance {
+    pub fn apply_attribute(&mut self, attr: &Attribute) {
+        let upper = attr.name.to_ascii_uppercase();
+        if upper.ends_with("TYSA_COLOUR") || upper.ends_with("TYSA_COLOR") {
+            let mut reals = Vec::new();
+            for v in &attr.values {
+                if let AttributeValue::Reals(rs) = v {
+                    reals.extend_from_slice(rs);
+                }
+            }
+            if reals.len() >= 3 {
+                self.color_rgb = Some([
+                    reals[0].clamp(0.0, 1.0),
+                    reals[1].clamp(0.0, 1.0),
+                    reals[2].clamp(0.0, 1.0),
+                ]);
+            }
+        } else if upper.ends_with("TYSA_NAME") {
+            for v in &attr.values {
+                if let AttributeValue::Text(s) = v {
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() {
+                        self.name = Some(trimmed.to_string());
+                        break;
+                    }
+                }
+            }
+        } else if upper.ends_with("TYSA_TRANSPARENCY") || upper.ends_with("TYSA_TRANSLUCENCY") {
+            for v in &attr.values {
+                if let AttributeValue::Reals(rs) = v {
+                    if let Some(&t) = rs.first() {
+                        if t.is_finite() {
+                            self.transparency = Some(t.clamp(0.0, 1.0));
+                            break;
+                        }
+                    }
+                }
+            }
+        } else if upper.ends_with("TYSA_DENSITY") {
+            for v in &attr.values {
+                if let AttributeValue::Reals(rs) = v {
+                    if let Some(&d) = rs.first() {
+                        if d.is_finite() && d > 0.0 {
+                            self.density = Some(d);
+                            break;
+                        }
+                    }
+                }
+            }
+        } else if upper.ends_with("TYSA_LAYER") {
+            for v in &attr.values {
+                if let AttributeValue::Ints(is) = v {
+                    if let Some(&l) = is.first() {
+                        self.layer = Some(l);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn inherit_from(&self, parent: &Appearance) -> Appearance {
+        Appearance {
+            color_rgb: self.color_rgb.or(parent.color_rgb),
+            transparency: self.transparency.or(parent.transparency),
+            name: self.name.clone().or_else(|| parent.name.clone()),
+            layer: self.layer.or(parent.layer),
+            density: self.density.or(parent.density),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ConversionWarning {
     pub code: String,
     pub subject: String,
@@ -246,6 +464,7 @@ pub struct Face {
     pub surface: SurfaceData,
     pub loops: Vec<Loop>,
     pub tolerance: f64,
+    pub appearance: Appearance,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -255,6 +474,29 @@ pub struct BodyInfo {
     pub body_type: Option<i64>,
     pub shell_indices: Vec<i64>,
     pub face_count: usize,
+    pub name: Option<String>,
+    pub appearance: Appearance,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssemblyInfo {
+    pub index: i64,
+    pub node_id: i64,
+    pub name: Option<String>,
+    pub appearance: Appearance,
+    pub instance_indices: Vec<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstanceInfo {
+    pub index: i64,
+    pub node_id: i64,
+    pub inst_type: Option<i64>,
+    pub assembly_index: Option<i64>,
+    pub part_index: Option<i64>,
+    pub transform: Option<Transform3D>,
+    pub name: Option<String>,
+    pub appearance: Appearance,
 }
 
 #[derive(Clone, Debug)]
@@ -266,6 +508,9 @@ pub struct BrepModel {
     pub faces: BTreeMap<i64, Face>,
     pub surfaces: BTreeMap<i64, SurfaceData>,
     pub curves: BTreeMap<i64, CurveData>,
+    pub assemblies: Vec<AssemblyInfo>,
+    pub instances: Vec<InstanceInfo>,
+    pub attributes: Vec<Attribute>,
     pub warnings: Vec<ConversionWarning>,
 }
 
@@ -869,8 +1114,16 @@ pub fn extract_brep(parsed: &ParseResult) -> BrepModel {
                 surface: s_data,
                 loops,
                 tolerance: safe_float(n.get_f64("tolerance"), 0.0),
+                appearance: Appearance::default(),
             },
         );
+    }
+
+    let (attributes, appearance_by_owner) = extract_attributes(&nodes);
+    for face in faces.values_mut() {
+        if let Some(app) = appearance_by_owner.get(&face.index) {
+            face.appearance = app.clone();
+        }
     }
 
     let mut bodies = Vec::new();
@@ -892,12 +1145,79 @@ pub fn extract_brep(parsed: &ParseResult) -> BrepModel {
             .values()
             .filter(|f| f.shell_index.is_some_and(|si| seen_s.contains(&si)))
             .count();
+        let appearance = appearance_by_owner.get(&n.index).cloned().unwrap_or_default();
         bodies.push(BodyInfo {
             index: n.index,
             node_id: n.get_i64("node_id").unwrap_or(0),
             body_type: n.get_i64("body_type"),
             shell_indices,
             face_count,
+            name: appearance.name.clone(),
+            appearance,
+        });
+    }
+
+    let mut instances = Vec::new();
+    let mut inst_by_asm: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+    for &n in nodes.values() {
+        if n.type_id != 11 {
+            continue;
+        }
+        let tf_idx = n.get_i64("transform").filter(|&i| i != 0);
+        let transform = tf_idx
+            .and_then(|ti| nodes.get(&ti).copied())
+            .map(Transform3D::from_xt);
+        let asm_idx = n.get_i64("assembly").filter(|&i| i != 0);
+        let part_idx = n.get_i64("part").filter(|&i| i != 0);
+        let appearance = appearance_by_owner.get(&n.index).cloned().unwrap_or_default();
+        if let Some(ai) = asm_idx {
+            inst_by_asm.entry(ai).or_default().push(n.index);
+        }
+        instances.push(InstanceInfo {
+            index: n.index,
+            node_id: n.get_i64("node_id").unwrap_or(0),
+            inst_type: n.get_i64("type"),
+            assembly_index: asm_idx,
+            part_index: part_idx,
+            transform,
+            name: appearance.name.clone(),
+            appearance,
+        });
+    }
+
+    let mut assemblies = Vec::new();
+    for &n in nodes.values() {
+        if n.type_id != 10 {
+            continue;
+        }
+        let mut instance_indices = Vec::new();
+        let mut seen_i = BTreeSet::new();
+        let mut cur = n.get_i64("sub_instance").filter(|&i| i != 0);
+        while let Some(ii) = cur {
+            if !seen_i.insert(ii) {
+                break;
+            }
+            if nodes.get(&ii).is_some_and(|in_node| in_node.type_id == 11) {
+                instance_indices.push(ii);
+                cur = nodes[&ii].get_i64("next_in_part").filter(|&i| i != 0);
+            } else {
+                break;
+            }
+        }
+        if let Some(extra) = inst_by_asm.get(&n.index) {
+            for &ii in extra {
+                if seen_i.insert(ii) {
+                    instance_indices.push(ii);
+                }
+            }
+        }
+        let appearance = appearance_by_owner.get(&n.index).cloned().unwrap_or_default();
+        assemblies.push(AssemblyInfo {
+            index: n.index,
+            node_id: n.get_i64("node_id").unwrap_or(0),
+            name: appearance.name.clone(),
+            appearance,
+            instance_indices,
         });
     }
 
@@ -909,6 +1229,321 @@ pub fn extract_brep(parsed: &ParseResult) -> BrepModel {
         faces,
         surfaces,
         curves,
+        assemblies,
+        instances,
+        attributes,
         warnings,
     }
+}
+
+fn decode_bytes_string(vals: &[XtValue]) -> String {
+    let bytes: Vec<u8> = vals
+        .iter()
+        .filter_map(|v| match v {
+            XtValue::Byte(b) => Some(*b),
+            XtValue::Int(i) => Some((*i & 0xFF) as u8),
+            _ => None,
+        })
+        .take_while(|&b| b != 0)
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn extract_attributes(
+    nodes: &BTreeMap<i64, &XtNode>,
+) -> (Vec<Attribute>, BTreeMap<i64, Appearance>) {
+    let mut owner_from_chain: BTreeMap<i64, i64> = BTreeMap::new();
+    for &n in nodes.values() {
+        if !matches!(n.type_id, 10 | 11 | 12 | 13 | 14 | 15 | 16 | 18 | 29) {
+            continue;
+        }
+        let mut cur = n.get_i64("attributes_groups").filter(|&i| i != 0);
+        let mut seen = BTreeSet::new();
+        while let Some(ai) = cur {
+            if !seen.insert(ai) {
+                break;
+            }
+            let Some(&an) = nodes.get(&ai) else {
+                break;
+            };
+            owner_from_chain.entry(ai).or_insert(n.index);
+            cur = an.get_i64("next").filter(|&i| i != 0);
+        }
+    }
+
+    let mut all_attrs = Vec::new();
+    let mut app_by_owner: BTreeMap<i64, Appearance> = BTreeMap::new();
+
+    for &n in nodes.values() {
+        if n.type_id != 81 {
+            continue;
+        }
+        let def_name = n
+            .get_i64("definition")
+            .and_then(|di| nodes.get(&di).copied())
+            .and_then(|dn| dn.get_i64("identifier"))
+            .and_then(|ii| nodes.get(&ii).copied())
+            .and_then(|idn| idn.field("string"))
+            .map(decode_bytes_string)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let mut values = Vec::new();
+        if let Some(field_refs) = n.field("fields") {
+            for fref in field_refs {
+                let Some(f_idx) = fref.as_i64() else {
+                    continue;
+                };
+                let Some(&vn) = nodes.get(&f_idx) else {
+                    continue;
+                };
+                match vn.type_id {
+                    84 => {
+                        if let Some(raw) = vn.field("values") {
+                            values.push(AttributeValue::Text(decode_bytes_string(raw)));
+                        }
+                    }
+                    102 => {
+                        if let Some(raw) = vn.field("string") {
+                            values.push(AttributeValue::Text(decode_bytes_string(raw)));
+                        }
+                    }
+                    98 => {
+                        if let Some(raw) = vn.field("values") {
+                            let units: Vec<u16> = raw
+                                .iter()
+                                .filter_map(XtValue::as_i64)
+                                .map(|i| (i & 0xFFFF) as u16)
+                                .take_while(|&u| u != 0)
+                                .collect();
+                            values.push(AttributeValue::Text(String::from_utf16_lossy(&units)));
+                        }
+                    }
+                    82 => {
+                        let ints: Vec<i64> = vn
+                            .field("values")
+                            .map(|vals| vals.iter().filter_map(XtValue::as_i64).collect())
+                            .unwrap_or_default();
+                        values.push(AttributeValue::Ints(ints));
+                    }
+                    83 => {
+                        let reals: Vec<f64> = vn
+                            .field("values")
+                            .map(|vals| vals.iter().filter_map(XtValue::as_f64).collect())
+                            .unwrap_or_default();
+                        values.push(AttributeValue::Reals(reals));
+                    }
+                    85 | 86 | 87 | 89 => {
+                        let vecs: Vec<[f64; 3]> = vn
+                            .field("values")
+                            .map(|vals| vals.iter().filter_map(XtValue::as_vec3).collect())
+                            .unwrap_or_default();
+                        values.push(AttributeValue::Vec3s(vecs));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let owner_index = n
+            .get_i64("owner")
+            .filter(|&i| i != 0)
+            .or_else(|| owner_from_chain.get(&n.index).copied());
+        let attr = Attribute {
+            index: n.index,
+            name: def_name,
+            owner_index,
+            values,
+        };
+        if let Some(oi) = owner_index {
+            app_by_owner.entry(oi).or_default().apply_attribute(&attr);
+        }
+        all_attrs.push(attr);
+    }
+
+    (all_attrs, app_by_owner)
+}
+
+pub fn transform_curve_data(curve: &CurveData, tf: &Transform3D) -> CurveData {
+    let sp_surface = curve
+        .sp_surface
+        .as_ref()
+        .map(|s| transform_surface_data(s, tf));
+    let flip_sense = tf.det() < 0.0;
+    let kind = match &curve.kind {
+        CurveKind::Line { origin, dir } => CurveKind::Line {
+            origin: tf.apply_point(*origin),
+            dir: tf.apply_dir(*dir),
+        },
+        CurveKind::Circle {
+            centre,
+            normal,
+            x_axis,
+            radius,
+        } => {
+            let n_dir = tf.apply_dir(*normal);
+            CurveKind::Circle {
+                centre: tf.apply_point(*centre),
+                normal: if flip_sense {
+                    [-n_dir[0], -n_dir[1], -n_dir[2]]
+                } else {
+                    n_dir
+                },
+                x_axis: tf.apply_dir(*x_axis),
+                radius: radius * tf.scale.abs(),
+            }
+        }
+        CurveKind::Ellipse {
+            centre,
+            normal,
+            x_axis,
+            major_radius,
+            minor_radius,
+        } => {
+            let n_dir = tf.apply_dir(*normal);
+            CurveKind::Ellipse {
+                centre: tf.apply_point(*centre),
+                normal: if flip_sense {
+                    [-n_dir[0], -n_dir[1], -n_dir[2]]
+                } else {
+                    n_dir
+                },
+                x_axis: tf.apply_dir(*x_axis),
+                major_radius: major_radius * tf.scale.abs(),
+                minor_radius: minor_radius * tf.scale.abs(),
+            }
+        }
+        CurveKind::Nurbs(nc) => {
+            let mut copy = (**nc).clone();
+            if !copy.is_pcurve {
+                for p in &mut copy.poles {
+                    *p = tf.apply_point(*p);
+                }
+            }
+            CurveKind::Nurbs(Box::new(copy))
+        }
+        CurveKind::Intersection { points } => CurveKind::Intersection {
+            points: points.iter().map(|&p| tf.apply_point(p)).collect(),
+        },
+        CurveKind::Unsupported(s) => CurveKind::Unsupported(s.clone()),
+    };
+    CurveData {
+        sense: curve.sense,
+        kind,
+        sp_surface,
+    }
+}
+
+pub fn transform_surface_data(surf: &SurfaceData, tf: &Transform3D) -> SurfaceData {
+    let sense = surf.sense;
+    let kind = match &surf.kind {
+        SurfaceKind::Plane {
+            origin,
+            normal,
+            x_axis,
+        } => SurfaceKind::Plane {
+            origin: tf.apply_point(*origin),
+            normal: tf.apply_dir(*normal),
+            x_axis: tf.apply_dir(*x_axis),
+        },
+        SurfaceKind::Cylinder {
+            origin,
+            axis,
+            x_axis,
+            radius,
+        } => SurfaceKind::Cylinder {
+            origin: tf.apply_point(*origin),
+            axis: tf.apply_dir(*axis),
+            x_axis: tf.apply_dir(*x_axis),
+            radius: radius * tf.scale.abs(),
+        },
+        SurfaceKind::Cone {
+            origin,
+            axis,
+            x_axis,
+            radius,
+            sin_half_angle,
+            cos_half_angle,
+        } => SurfaceKind::Cone {
+            origin: tf.apply_point(*origin),
+            axis: tf.apply_dir(*axis),
+            x_axis: tf.apply_dir(*x_axis),
+            radius: radius * tf.scale.abs(),
+            sin_half_angle: *sin_half_angle,
+            cos_half_angle: *cos_half_angle,
+        },
+        SurfaceKind::Sphere {
+            centre,
+            axis,
+            x_axis,
+            radius,
+        } => SurfaceKind::Sphere {
+            centre: tf.apply_point(*centre),
+            axis: tf.apply_dir(*axis),
+            x_axis: tf.apply_dir(*x_axis),
+            radius: radius * tf.scale.abs(),
+        },
+        SurfaceKind::Torus {
+            centre,
+            axis,
+            x_axis,
+            major_radius,
+            minor_radius,
+        } => SurfaceKind::Torus {
+            centre: tf.apply_point(*centre),
+            axis: tf.apply_dir(*axis),
+            x_axis: tf.apply_dir(*x_axis),
+            major_radius: major_radius * tf.scale.abs(),
+            minor_radius: minor_radius * tf.scale.abs(),
+        },
+        SurfaceKind::Nurbs(ns) => {
+            let mut copy = (**ns).clone();
+            for row in &mut copy.poles {
+                for p in row {
+                    *p = tf.apply_point(*p);
+                }
+            }
+            SurfaceKind::Nurbs(Box::new(copy))
+        }
+        SurfaceKind::Swept {
+            direction,
+            scale,
+            profile_index,
+            profile,
+        } => SurfaceKind::Swept {
+            direction: tf.apply_dir(*direction),
+            scale: *scale * tf.scale,
+            profile_index: *profile_index,
+            profile: profile
+                .as_ref()
+                .map(|c| Box::new(transform_curve_data(c, tf))),
+        },
+        SurfaceKind::Spun {
+            base,
+            axis,
+            x_axis,
+            profile_index,
+            profile,
+        } => SurfaceKind::Spun {
+            base: tf.apply_point(*base),
+            axis: tf.apply_dir(*axis),
+            x_axis: tf.apply_dir(*x_axis),
+            profile_index: *profile_index,
+            profile: profile
+                .as_ref()
+                .map(|c| Box::new(transform_curve_data(c, tf))),
+        },
+        SurfaceKind::Offset {
+            offset,
+            base_surface_index,
+            base_surface,
+        } => SurfaceKind::Offset {
+            offset: offset * tf.scale.abs(),
+            base_surface_index: *base_surface_index,
+            base_surface: base_surface
+                .as_ref()
+                .map(|s| Box::new(transform_surface_data(s, tf))),
+        },
+        SurfaceKind::Unsupported(s) => SurfaceKind::Unsupported(s.clone()),
+    };
+    SurfaceData { sense, kind }
 }

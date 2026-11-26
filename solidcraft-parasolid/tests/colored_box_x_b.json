@@ -1,0 +1,16 @@
+{
+  "entry": "import",
+  "file": "colored_box.x_b",
+  "expect": {
+    "reply": {
+      "bodies": 1
+    },
+    "model": {
+      "body_count": 1,
+      "total": {
+        "volume_mm3": 24000.0
+      }
+    },
+    "tolerance": 0.001
+  }
+}

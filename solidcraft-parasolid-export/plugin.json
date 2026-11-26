@@ -1,0 +1,65 @@
+{
+  "id": "solidcraft-parasolid-export",
+  "name": "Parasolid XT Exporter",
+  "version": "0.1.0",
+  "description": "Clean-room Parasolid XT (.x_b, .x_t) B-rep exporter plugin powered by xtopen.",
+  "capabilities": ["formats@0.2"],
+  "runtime": {
+    "module": "solidcraft-parasolid-export.wasm",
+    "commands": ["document.inspect", "model.mesh"],
+    "entries": [
+      {
+        "name": "export-xb",
+        "kind": "exporter",
+        "effect": "read",
+        "label": "Parasolid Binary",
+        "extensions": ["x_b"],
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "quality": {
+              "type": "string",
+              "title": "Mesh Quality",
+              "enum": ["coarse", "standard", "fine"],
+              "default": "standard"
+            },
+            "merge_coplanar": {
+              "type": "boolean",
+              "title": "Merge Coplanar Faces",
+              "default": true
+            }
+          }
+        }
+      },
+      {
+        "name": "export-xt",
+        "kind": "exporter",
+        "effect": "read",
+        "label": "Parasolid Text",
+        "extensions": ["x_t"],
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "quality": {
+              "type": "string",
+              "title": "Mesh Quality",
+              "enum": ["coarse", "standard", "fine"],
+              "default": "standard"
+            },
+            "merge_coplanar": {
+              "type": "boolean",
+              "title": "Merge Coplanar Faces",
+              "default": true
+            }
+          }
+        }
+      }
+    ],
+    "limits": {
+      "fuel": 100000000000,
+      "memory_mib": 128,
+      "deadline_ms": 120000,
+      "stack_kib": 8192
+    }
+  }
+}
