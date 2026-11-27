@@ -7,7 +7,7 @@
 </picture>
 
 <p>
-  <strong>Clean-room Parasolid XT (<code>.x_b</code>, <code>.x_t</code>, <code>.x_p</code>) B-rep importer &amp; exporter plugins for SolidCraft + live in-browser 3D viewer &amp; mass calculator — written in pure Rust and compiled to WebAssembly.</strong>
+  <strong>Clean-room Parasolid XT (<code>.x_b</code>, <code>.x_t</code>, <code>.x_p</code>) &amp; Siemens NX (<code>.prt</code>) B-rep importer &amp; exporter plugins for SolidCraft + live in-browser 3D viewer &amp; mass calculator — written in pure Rust and compiled to WebAssembly.</strong>
 </p>
 
 <p>
@@ -36,7 +36,7 @@
 
 ## Live Browser Viewer & Mass Calculator
 
-Open any `.x_b`, `.x_t`, or `.x_p` file directly in your browser (100% client-side in WebAssembly, zero server uploads):
+Open any `.x_b`, `.x_t`, `.x_p`, or Siemens NX `.prt` (`SPLMSSTR` & legacy `OLE2/CFB`) file directly in your browser (100% client-side in WebAssembly, zero server uploads):
 
 **https://41opty41.github.io/solidcraft-parasolid/**
 
@@ -52,7 +52,7 @@ Open any `.x_b`, `.x_t`, or `.x_p` file directly in your browser (100% client-si
 
 This repository ships two companion SolidCraft `craft:plugin@0.2.0` WebAssembly Components powered by a pure-Rust port of [xtopen](https://github.com/41Opty41/xtopen):
 
-1. **`solidcraft-parasolid` (`v0.2.0` — Importer)** — opens `.x_b`, `.x_t`, `.x_p`, `.xmt_txt`, `.xmt_bin` directly via **File › Open** in SolidCraft `v0.50.0+` (underscore extensions enabled upstream in [tangency-labs/solidcraft#22054](https://github.com/tangency-labs/solidcraft/pull/22054)). Now preserves **assemblies (`ASSEMBLY` / `INSTANCE` / `TRANSFORM`)**, **names (`SDL/TYSA_NAME`)**, and **face/body colors & transparency (`SDL/TYSA_COLOUR`)**.
+1. **`solidcraft-parasolid` (`v0.3.0` — Importer)** — opens `.x_b`, `.x_t`, `.x_p`, `.xmt_txt`, `.xmt_bin`, and **Siemens NX `.prt`** (`SPLMSSTR` zlib-compressed & legacy `OLE2/CFB` containers) directly via **File › Open** in SolidCraft `v0.50.0+` (underscore extensions enabled upstream in [tangency-labs/solidcraft#22054](https://github.com/tangency-labs/solidcraft/pull/22054)). Preserves **assemblies (`ASSEMBLY` / `INSTANCE` / `TRANSFORM`)**, **names (`SDL/TYSA_NAME`)**, and **face/body colors & transparency (`SDL/TYSA_COLOUR`)**.
 2. **`solidcraft-parasolid-export` (`v0.1.0` — Exporter)** — adds **File › Export › Parasolid Binary (`.x_b`)** and **Parasolid Text (`.x_t`)** slots, including **coplanar face merging** so planar CAD solids export with clean minimal faces and straight edges.
 
 ---
@@ -60,19 +60,19 @@ This repository ships two companion SolidCraft `craft:plugin@0.2.0` WebAssembly 
 ## Install in SolidCraft (`v0.50.0+`)
 
 1. From the [Latest Release](https://github.com/41Opty41/solidcraft-parasolid/releases/latest), download:
-   - **`solidcraft-parasolid-0.2.0.zip`** (Parasolid XT **Importer**)
+   - **`solidcraft-parasolid-0.3.0.zip`** (Parasolid XT & NX `.prt` **Importer**)
    - **`solidcraft-parasolid-export-0.1.0.zip`** (Parasolid XT **Exporter**, optional)
 2. In SolidCraft, open **Preferences › Plugins › Install plugin…** and select each `.zip` archive (or install from the community catalog).
-3. Use **File › Open** for `.x_b`/`.x_t`/`.x_p` models and **File › Export** to write `.x_b` / `.x_t`.
+3. Use **File › Open** for `.x_b`/`.x_t`/`.x_p`/`.prt` models and **File › Export** to write `.x_b` / `.x_t`.
 
 ---
 
 ## Verification Summary (SolidCraft `v0.50.0`)
 
-- `cargo test --workspace`: all unit & integration tests pass (XT parsing, STEP export, assemblies/colors, coplanar mesh-to-Brep roundtrip, watertight tessellation & exact divergence-theorem mass properties).
+- `cargo test --workspace`: all unit & integration tests pass (XT parsing, NX `.prt` SPLMSSTR/OLE2 extraction, STEP export, assemblies/colors, coplanar mesh-to-Brep roundtrip, watertight tessellation & exact divergence-theorem mass properties).
 - `solidcraft-cli plugin check` (`0.50.0`): **`0` errors, `0` warnings** on both `solidcraft-parasolid` (importer) and `solidcraft-parasolid-export` (exporter).
 - `solidcraft-cli plugin test --require-cases` (`0.50.0`):
-  - **Importer (`solidcraft-parasolid 0.2.0`)**: **12/12** cases passed (`box`, `box.x_t`, `cylinder`, `cone_frustum`, `plate_with_hole`, `sphere`, `two_boxes`, `nurbs_sheet`, `colored_box`, `assembly_two_parts`, `corrupt`, `empty`).
+  - **Importer (`solidcraft-parasolid 0.3.0`)**: **13/13** cases passed (`box`, `box.x_t`, `cylinder`, `cone_frustum`, `plate_with_hole`, `nx_plate.prt`, `sphere`, `two_boxes`, `nurbs_sheet`, `colored_box`, `assembly_two_parts`, `corrupt`, `empty`).
   - **Exporter (`solidcraft-parasolid-export 0.1.0`)**: **3/3** cases passed (`box_export_xb`, `cylinder_export_xb`, `plate_export_xt`), plus OCCT roundtrip verification.
 
 ---
@@ -83,8 +83,11 @@ This repository ships two companion SolidCraft `craft:plugin@0.2.0` WebAssembly 
 # Run unit & integration tests
 cargo test --workspace
 
-# Convert .x_b / .x_t directly to STEP on the command line
-cargo run --release -p xtopen-cli -- convert model.x_b model.step --units mm --schema AP214
+# Convert .prt / .x_b / .x_t directly to STEP on the command line
+cargo run --release -p xtopen-cli -- convert model.prt model.step --units mm --schema AP214
+
+# Extract embedded .x_b streams & preview image from an NX .prt file
+cargo run --release -p xtopen-cli -- extract-prt model.prt out_dir/
 
 # Transcode binary <-> text Parasolid XT
 cargo run --release -p xtopen-cli -- transcode model.x_b model.x_t

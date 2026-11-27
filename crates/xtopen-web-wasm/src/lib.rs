@@ -3,9 +3,9 @@
 use std::cell::RefCell;
 use serde_json::json;
 use xtopen_core::{
-    compute_mesh_mass_props, dumps_step, extract_brep, parse_bytes, tessellate_brep,
-    write_obj_string, write_stl_binary_bytes, xb_to_xt, xt_to_xb, BrepModel, MeshMassProps,
-    StepOptions, StepSchema, StepUnits, TessMesh,
+    compute_mesh_mass_props, dumps_step, is_prt_bytes, parse_and_extract_brep, tessellate_brep,
+    write_obj_string, write_stl_binary_bytes, write_xb_from_brep, write_xt_from_brep, xb_to_xt,
+    xt_to_xb, BrepModel, MeshMassProps, StepOptions, StepSchema, StepUnits, TessMesh,
 };
 
 struct LoadedState {
@@ -77,11 +77,10 @@ pub unsafe extern "C" fn load_xt(ptr: *const u8, len: usize, density_kg_m3: f64)
         return return_json(json!({ "ok": false, "error": "Input file is empty" }));
     }
     let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let parsed = match parse_bytes(slice) {
-        Ok(p) => p,
+    let model = match parse_and_extract_brep(slice) {
+        Ok(m) => m,
         Err(e) => return return_json(json!({ "ok": false, "error": e.to_string() })),
     };
-    let model = extract_brep(&parsed);
     if model.faces.is_empty() {
         return return_json(
             json!({ "ok": false, "error": "Parasolid file contains no B-rep faces" }),
@@ -229,7 +228,13 @@ pub extern "C" fn transcode_xt(to_binary: u32) -> *const u8 {
         let Some(ref loaded) = *guard else {
             return return_bytes(b"");
         };
-        let res = if to_binary != 0 {
+        let res = if is_prt_bytes(&loaded.raw_bytes) {
+            if to_binary != 0 {
+                write_xb_from_brep(&loaded.model)
+            } else {
+                write_xt_from_brep(&loaded.model)
+            }
+        } else if to_binary != 0 {
             xt_to_xb(&loaded.raw_bytes)
         } else {
             xb_to_xt(&loaded.raw_bytes)

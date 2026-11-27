@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>xtopen — Browser Parasolid XT (.x_b / .x_t) 3D Viewer &amp; Mass Calculator</title>
+  <title>xtopen — Browser Parasolid XT &amp; NX (.prt) 3D Viewer &amp; Mass Calculator</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -11,11 +11,11 @@
     <div class="brand">
       <span class="badge-dot"></span>
       <span class="title">xtopen</span>
-      <span class="subtitle">Clean-Room Parasolid XT Viewer &amp; Mass Calculator (WASM)</span>
+      <span class="subtitle">Clean-Room Parasolid XT &amp; NX (.prt) Viewer &amp; Mass Calculator (WASM)</span>
     </div>
     <div class="top-actions">
-      <label class="btn btn-primary" for="file-input">Open .x_b / .x_t / .x_p</label>
-      <input id="file-input" type="file" accept=".x_b,.x_t,.x_p,.xmt_txt,.xmt_bin,.xb,.xt" hidden />
+      <label class="btn btn-primary" for="file-input">Open .x_b / .x_t / .prt</label>
+      <input id="file-input" type="file" accept=".x_b,.x_t,.x_p,.prt,.xmt_txt,.xmt_bin,.xb,.xt" hidden />
       <a class="btn btn-ghost" href="https://github.com/41Opty41/solidcraft-parasolid" target="_blank" rel="noopener">GitHub</a>
     </div>
   </header>
@@ -27,6 +27,7 @@
       <div class="sample-bar">
         <span class="bar-label">Samples:</span>
         <button class="chip" data-sample="samples/plate_with_hole.x_b">Plate with Hole</button>
+        <button class="chip" data-sample="samples/nx_plate_sample.prt">NX .prt (SPLMSSTR)</button>
         <button class="chip" data-sample="samples/colored_box.x_b">Colored Block</button>
         <button class="chip" data-sample="samples/assembly_two_parts.x_b">2-Part Assembly</button>
         <button class="chip" data-sample="samples/cylinder.x_b">Cylinder</button>
@@ -50,7 +51,7 @@
       </div>
 
       <div id="drop-overlay" class="drop-overlay hidden">
-        <div class="drop-box">Drop Parasolid file (<code>.x_b</code>, <code>.x_t</code>, <code>.x_p</code>) to inspect locally in WASM</div>
+        <div class="drop-box">Drop Parasolid or NX file (<code>.x_b</code>, <code>.x_t</code>, <code>.x_p</code>, <code>.prt</code>) to inspect locally in WASM</div>
       </div>
 
       <div class="hud-hint">Drag: Orbit &middot; Right-drag / Shift+Drag: Pan &middot; Wheel: Zoom &middot; 100% client-side</div>

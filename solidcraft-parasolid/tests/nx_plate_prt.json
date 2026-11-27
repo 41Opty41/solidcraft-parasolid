@@ -1,0 +1,16 @@
+{
+  "entry": "import",
+  "file": "nx_plate.prt",
+  "expect": {
+    "reply": {
+      "bodies": 1
+    },
+    "model": {
+      "body_count": 1,
+      "total": {
+        "volume_mm3": 15214.60183660255
+      }
+    },
+    "tolerance": 0.5
+  }
+}

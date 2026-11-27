@@ -1,9 +1,9 @@
 [package]
 name = "solidcraft-parasolid-wasm"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "SolidCraft WebAssembly importer component for Parasolid XT (.x_b, .x_t, .x_p) files"
+description = "SolidCraft WebAssembly importer component for Parasolid XT (.x_b, .x_t, .x_p) and Siemens NX (.prt) files"
 
 [lib]
 crate-type = ["cdylib"]

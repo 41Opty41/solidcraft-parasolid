@@ -1,8 +1,8 @@
 {
   "id": "solidcraft-parasolid",
   "name": "Parasolid XT Importer",
-  "version": "0.2.0",
-  "description": "Clean-room Parasolid XT (.x_b, .x_t, .x_p) B-rep importer powered by xtopen.",
+  "version": "0.3.0",
+  "description": "Clean-room Parasolid XT (.x_b, .x_t, .x_p) and Siemens NX (.prt) B-rep importer powered by xtopen.",
   "capabilities": ["formats@0.2"],
   "runtime": {
     "module": "solidcraft-parasolid.wasm",
@@ -10,7 +10,7 @@
     "entries": [{
       "name": "import",
       "kind": "importer",
-      "extensions": ["x_b", "x_t", "x_p", "xmt_txt", "xmt_bin", "xb", "xt"],
+      "extensions": ["x_b", "x_t", "x_p", "xmt_txt", "xmt_bin", "xb", "xt", "prt"],
       "input_schema": {
         "type": "object",
         "properties": {

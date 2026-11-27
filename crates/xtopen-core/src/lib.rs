@@ -3,6 +3,7 @@
 pub mod mass;
 pub mod mesh_brep;
 pub mod model;
+pub mod prt;
 pub mod schema;
 pub mod step_writer;
 pub mod tessellate;
@@ -17,6 +18,11 @@ pub use model::{
     Attribute, AttributeValue, BodyInfo, BrepModel, Coedge, ConversionWarning, CurveData,
     CurveKind, Edge, Face, InstanceInfo, Loop, NurbsCurve, NurbsSurface, Sense, SurfaceData,
     SurfaceKind, Transform3D, Vertex,
+};
+pub use prt::{
+    build_synthetic_ole2_prt, build_synthetic_splmsstr_prt, extract_prt, extract_prt_brep,
+    is_prt_bytes, merge_brep_models, parse_prt_primary, PrtArchive, PrtContainerKind, PrtStream,
+    PrtStreamKind,
 };
 pub use step_writer::{convert_parsed_to_step, dumps_step, StepOptions, StepSchema, StepUnits};
 pub use tessellate::{tessellate_brep, write_obj_string, write_stl_binary_bytes, TessMesh};
@@ -41,10 +47,13 @@ pub struct ConvertOutput {
     pub warnings: Vec<ConversionWarning>,
 }
 
-/// Auto-detect binary (.x_b / .x_p) vs ASCII text (.x_t) Parasolid XT bytes and parse them.
+/// Auto-detect binary (.x_b / .x_p), text (.x_t), or Siemens NX (.prt) bytes and parse primary XT stream.
 pub fn parse_bytes(data: &[u8]) -> Result<ParseResult, XtError> {
     if data.is_empty() {
         return Err(XtError::InvalidInput("Input Parasolid file is empty".into()));
+    }
+    if is_prt_bytes(data) {
+        return parse_prt_primary(data);
     }
     if data.starts_with(b"PS\x00\x00") {
         return parse_xb(data);
@@ -81,9 +90,20 @@ pub fn parse_bytes(data: &[u8]) -> Result<ParseResult, XtError> {
     parse_xb(data)
 }
 
-pub fn convert_bytes_to_step(data: &[u8], opts: &StepOptions) -> Result<ConvertOutput, XtError> {
+/// Auto-detect (.x_b, .x_t, .x_p, or NX .prt) and return the extracted (or merged multi-stream) B-rep model.
+pub fn parse_and_extract_brep(data: &[u8]) -> Result<BrepModel, XtError> {
+    if data.is_empty() {
+        return Err(XtError::InvalidInput("Input Parasolid file is empty".into()));
+    }
+    if is_prt_bytes(data) {
+        return extract_prt_brep(data);
+    }
     let parsed = parse_bytes(data)?;
-    let model = extract_brep(&parsed);
+    Ok(extract_brep(&parsed))
+}
+
+pub fn convert_bytes_to_step(data: &[u8], opts: &StepOptions) -> Result<ConvertOutput, XtError> {
+    let model = parse_and_extract_brep(data)?;
     if model.faces.is_empty() {
         return Err(XtError::Unsupported(
             "Parasolid file contains no B-rep faces to import".into(),
